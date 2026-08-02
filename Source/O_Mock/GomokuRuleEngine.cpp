@@ -47,8 +47,23 @@ void UGomokuRuleEngine::InitializeMatch(const FGomokuMatchConfig& Config)
 		PlayerOrder.Add(PlayerId);
 	}
 
+	InitializeActivePlayerIndices();
+
 	CurrentPlayerIndex = 0;
 	bInitialized = true;
+}
+
+void UGomokuRuleEngine::InitializeActivePlayerIndices()
+{
+	ActivePlayerIndices.Reset();
+	for (int32 i = 0; i < Players.Num(); ++i)
+	{
+		const FGomokuPlayerStateData& P = Players[i];
+		if (!P.bHasAbandoned)
+		{
+			ActivePlayerIndices.Add(i);
+		}
+	}
 }
 
 bool UGomokuRuleEngine::IsValidCoordinate(int32 X, int32 Y) const
@@ -149,10 +164,16 @@ void UGomokuRuleEngine::AdvanceTurn()
 		return;
 	}
 
-	const int32 PlayerCount = PlayerOrder.Num();
-	for (int32 Step = 0; Step < PlayerCount; ++Step)
+	const int32 ActiveCount = ActivePlayerIndices.Num();
+	if (ActiveCount == 0)
 	{
-		CurrentPlayerIndex = (CurrentPlayerIndex + 1) % PlayerCount;
+		return;
+	}
+
+	for (int32 Step = 0; Step < ActiveCount; ++Step)
+	{
+		CurrentPlayerIndex = AdvanceTurnIndex(CurrentPlayerIndex, TurnDirection);
+
 		const int32 NextPlayerId = PlayerOrder[CurrentPlayerIndex];
 		if (FGomokuPlayerStateData* Player = FindPlayerMutable(NextPlayerId))
 		{
@@ -164,6 +185,25 @@ void UGomokuRuleEngine::AdvanceTurn()
 		}
 		return;
 	}
+}
+
+int32 UGomokuRuleEngine::AdvanceTurnIndex(int32 CurrentIndex, int32 Direction) const
+{
+	const int32 N = PlayerOrder.Num();
+	if (N <= 0) return 0;
+
+	int64 Next = static_cast<int64>(CurrentIndex) + static_cast<int64>(Direction);
+	Next = FMath::Max(Next, 0LL);
+	return static_cast<int32>(Next % N);
+}
+
+void UGomokuRuleEngine::ReverseTurnDirection()
+{
+	if (!bInitialized || PlayerOrder.Num() == 0)
+	{
+		return;
+	}
+	TurnDirection = (TurnDirection != 0) ? -TurnDirection : 1;
 }
 
 FGomokuPlayerStateData UGomokuRuleEngine::GetPlayerStateData(int32 PlayerId) const
@@ -283,4 +323,41 @@ const FGomokuPlayerStateData* UGomokuRuleEngine::FindPlayer(int32 PlayerId) cons
 		}
 	}
 	return nullptr;
+}
+
+bool UGomokuRuleEngine::IsBoardFull() const
+{
+	return bInitialized && !Board.HasEmptyCell();
+}
+
+bool UGomokuRuleEngine::IsValidEmpty(const FIntPoint& Cell) const
+{
+	if (!bInitialized || !Board.IsInside(Cell.X, Cell.Y))
+		return false;
+	return Board.Get(Cell.X, Cell.Y) == ECellState::Empty;
+}
+
+void UGomokuRuleEngine::SetCurrentPlayerIndex(int32 Index)
+{
+	CurrentPlayerIndex = FMath::Clamp(Index, 0, PlayerOrder.Num() - 1);
+}
+
+FGomokuWinResult UGomokuRuleEngine::CheckWinAt(const FIntPoint& Cell) const
+{
+	FGomokuWinResult Result;
+	if (!bInitialized || !HasWinAt(Cell.X, Cell.Y))
+		return Result;
+
+	int32 WinnerId = CellStateToPlayerId(Board.Get(Cell.X, Cell.Y));
+	for (int32 i = 0; i < PlayerOrder.Num(); ++i)
+	{
+		if (PlayerOrder[i] == WinnerId)
+		{
+			Result.IsWin = true;
+			Result.WinnerPlayerIndex = i;
+			Result.WinCell = Cell;
+			break;
+		}
+	}
+	return Result;
 }

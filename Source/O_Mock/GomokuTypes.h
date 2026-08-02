@@ -57,6 +57,12 @@ struct FGomokuPlayerStateData
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gomoku")
 	bool bSkipNextTurn = false;
 
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gomoku")
+	bool bHasAbandoned = false;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gomoku|Items")
+	TArray<int32> ItemIds;
+
 	static FGomokuPlayerStateData CreateDefault(int32 InPlayerId, float InTimeLimit, int32 InInitialEnergy)
 	{
 		FGomokuPlayerStateData Data;
@@ -64,6 +70,7 @@ struct FGomokuPlayerStateData
 		Data.RemainingTime = InTimeLimit;
 		Data.Energy = InInitialEnergy;
 		Data.bSkipNextTurn = false;
+		Data.bHasAbandoned = false;
 		return Data;
 	}
 };
@@ -157,4 +164,20 @@ struct FGomokuBoardState
 		}
 		return false;
 	}
+};
+
+USTRUCT(BlueprintType)
+struct FGomokuWinResult
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gomoku|Win")
+	bool IsWin = false;
+
+	/** 0-based index into player order (GameState's CurrentPlayerIndex style). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gomoku|Win")
+	int32 WinnerPlayerIndex = INDEX_NONE;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gomoku|Win")
+	FIntPoint WinCell;
 };

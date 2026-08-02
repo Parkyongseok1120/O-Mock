@@ -63,14 +63,45 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Gomoku|Match")
 	bool IsMatchInitialized() const { return bInitialized; }
 
+	/** Check if the board is completely filled (no empty cells). */
+	UFUNCTION(BlueprintPure, Category = "Gomoku|Board")
+	bool IsBoardFull() const;
+
+	/** Returns true if cell is inside bounds and currently Empty. */
+	UFUNCTION(BlueprintPure, Category = "Gomoku|Board")
+	bool IsValidEmpty(const FIntPoint& Cell) const;
+
+	/** Override current player index (0-based into PlayerOrder). Used by GameState for turn control. */
+	UFUNCTION(BlueprintCallable, Category = "Gomoku|Turn")
+	void SetCurrentPlayerIndex(int32 Index);
+
+	/** Check win at a specific cell after placement. Returns FGomokuWinResult with IsWin and WinnerPlayerIndex (0-based). */
+	UFUNCTION(BlueprintPure, Category = "Gomoku|Win")
+	FGomokuWinResult CheckWinAt(const FIntPoint& Cell) const;
+
 	static ECellState PlayerIdToCellState(int32 PlayerId);
 	static int32 CellStateToPlayerId(ECellState State);
+
+	/** Build ActivePlayerIndices from current Players (excluding abandoned). Call after InitializeMatch or when abandon state changes. */
+	UFUNCTION(BlueprintCallable, Category = "Gomoku|Turn")
+	void InitializeActivePlayerIndices();
+
+	/** Current turn direction: +1 (forward) or -1 (reverse). Used by AdvanceTurn for circular rotation. */
+	UPROPERTY(BlueprintReadOnly, Category = "Gomoku|Turn")
+	int32 TurnDirection = 1;
+
+	/** Safely reverse the turn direction without changing current player. */
+	UFUNCTION(BlueprintCallable, Category = "Gomoku|Turn")
+	void ReverseTurnDirection();
 
 private:
 	int32 CountRay(int32 X, int32 Y, int32 DX, int32 DY, ECellState State) const;
 	bool HasWinAt(int32 X, int32 Y) const;
 	FGomokuPlayerStateData* FindPlayerMutable(int32 PlayerId);
 	const FGomokuPlayerStateData* FindPlayer(int32 PlayerId) const;
+
+	/** Compute next active player index using ActivePlayerIndices and Direction. */
+	int32 AdvanceTurnIndex(int32 CurrentIndex, int32 Direction) const;
 
 	UPROPERTY()
 	FGomokuMatchConfig MatchConfig;
@@ -83,6 +114,10 @@ private:
 
 	UPROPERTY()
 	TArray<int32> PlayerOrder;
+
+	/** Indices into Players of currently active (non-abandoned) players. */
+	UPROPERTY()
+	TArray<int32> ActivePlayerIndices;
 
 	UPROPERTY()
 	int32 CurrentPlayerIndex = 0;
