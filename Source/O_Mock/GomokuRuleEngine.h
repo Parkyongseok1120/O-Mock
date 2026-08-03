@@ -42,6 +42,59 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Gomoku|Board")
 	bool ChangeCellOwnership(int32 X, int32 Y, int32 NewPlayerId);
 
+	/** Place stone ignoring current-turn gate (items / timeout helpers). */
+	UFUNCTION(BlueprintCallable, Category = "Gomoku|Board")
+	bool ForcePlaceStone(int32 PlayerId, int32 X, int32 Y);
+
+	UFUNCTION(BlueprintCallable, Category = "Gomoku|Board")
+	bool SetCellBlocked(int32 X, int32 Y, bool bBlocked);
+
+	UFUNCTION(BlueprintCallable, Category = "Gomoku|Items")
+	bool ConsumePlayerEnergy(int32 PlayerId, int32 Cost);
+
+	UFUNCTION(BlueprintCallable, Category = "Gomoku|Items")
+	bool AddPlayerEnergy(int32 PlayerId, int32 Amount, int32 MaxEnergy = 5);
+
+	/** Check if a player has an item in their inventory. */
+	UFUNCTION(BlueprintPure, Category = "Gomoku|Items")
+	bool PlayerHasItem(int32 PlayerId, int32 ItemId) const;
+
+	/** Remove a single item from player's inventory (Stage 6 helper). */
+	UFUNCTION(BlueprintCallable, Category = "Gomoku|Items")
+	bool RemoveItemFromInventory(int32 PlayerId, int32 ItemId);
+
+	/** Add an item to player's inventory (unique IDs; no duplicates of same ItemId). */
+	UFUNCTION(BlueprintCallable, Category = "Gomoku|Items")
+	bool AddItemToInventory(int32 PlayerId, int32 ItemId);
+
+	/** Mark this item as gained this turn: not usable until next turn. */
+	UFUNCTION(BlueprintCallable, Category = "Gomoku|Items")
+	void MarkItemGainedThisTurn(int32 PlayerId, int32 ItemId);
+
+	/** Clear per-turn item locks for a player (called at turn start). Moves GainedThisTurn items to usable. */
+	UFUNCTION(BlueprintCallable, Category = "Gomoku|Items")
+	void ClearTurnItemLocksForPlayer(int32 PlayerId);
+
+	/** Reset one-item-per-turn flag for a player (called at turn start). */
+	UFUNCTION(BlueprintCallable, Category = "Gomoku|Items")
+	void ResetUsedItemThisTurn(int32 PlayerId);
+
+	/** Mark that this player has used their item slot this turn. */
+	UFUNCTION(BlueprintCallable, Category = "Gomoku|Items")
+	void SetUsedItemThisTurn(int32 PlayerId);
+
+	/** Check if a specific item is currently usable by the player (inventory + not locked + one-per-turn). */
+	UFUNCTION(BlueprintPure, Category = "Gomoku|Items")
+	bool IsItemUsableNow(int32 PlayerId, int32 ItemId) const;
+
+	/** GuardianBarrier: mark cell as protected so Steal/Pull fail against it. Returns false if invalid or not an occupied cell. */
+	UFUNCTION(BlueprintCallable, Category = "Gomoku|Items")
+	bool SetCellGuardianProtected(int32 X, int32 Y, bool bProtected);
+
+	/** GuardianBarrier: query if a cell is currently protected. */
+	UFUNCTION(BlueprintPure, Category = "Gomoku|Items")
+	bool IsCellGuardianProtected(int32 X, int32 Y) const;
+
 	UFUNCTION(BlueprintPure, Category = "Gomoku|Turn")
 	int32 GetCurrentPlayerId() const;
 
@@ -53,6 +106,20 @@ public:
 
 	UFUNCTION(BlueprintCallable, Category = "Gomoku|Turn")
 	bool SetPlayerSkipNextTurn(int32 PlayerId, bool bSkip);
+
+	/** Mark player abandoned and rebuild ActivePlayerIndices. Returns remaining active count. */
+	UFUNCTION(BlueprintCallable, Category = "Gomoku|Turn")
+	int32 AbandonPlayer(int32 PlayerId);
+
+	UFUNCTION(BlueprintPure, Category = "Gomoku|Turn")
+	TArray<int32> GetActivePlayerIndices() const { return ActivePlayerIndices; }
+
+	UFUNCTION(BlueprintPure, Category = "Gomoku|Turn")
+	int32 GetCurrentPlayerIndex() const { return CurrentPlayerIndex; }
+
+	/** Returns the sole active player index if exactly one remains (e.g. after abandon), else INDEX_NONE. */
+	UFUNCTION(BlueprintPure, Category = "Gomoku|Turn")
+	int32 GetSoleActivePlayerIndex() const;
 
 	UFUNCTION(BlueprintPure, Category = "Gomoku|Win")
 	bool IsGameWon(int32& OutWinnerId) const;
@@ -78,6 +145,13 @@ public:
 	/** Check win at a specific cell after placement. Returns FGomokuWinResult with IsWin and WinnerPlayerIndex (0-based). */
 	UFUNCTION(BlueprintPure, Category = "Gomoku|Win")
 	FGomokuWinResult CheckWinAt(const FIntPoint& Cell) const;
+
+	/** LastItemWinResult: cached result from the most recent item-driven board change (Steal/Pull).
+	 *  Set by GomokuItemLibrary after those effects so GameState/tests can read it. */
+	UFUNCTION(BlueprintPure, Category = "Gomoku|Items")
+	FGomokuWinResult GetLastItemWinResult() const { return LastItemWinResult; }
+
+	void SetLastItemWinResult(const FGomokuWinResult& InResult) { LastItemWinResult = InResult; }
 
 	static ECellState PlayerIdToCellState(int32 PlayerId);
 	static int32 CellStateToPlayerId(ECellState State);
@@ -124,4 +198,12 @@ private:
 
 	UPROPERTY()
 	bool bInitialized = false;
+
+	/** Cells protected by GuardianBarrier (Stage 7). */
+	UPROPERTY()
+	TSet<FIntPoint> GuardianProtectedCells;
+
+	/** Cached win result from last item-driven board change (Steal/Pull). Set by GomokuItemLibrary. */
+	UPROPERTY()
+	FGomokuWinResult LastItemWinResult;
 };

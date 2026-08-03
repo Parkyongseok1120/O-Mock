@@ -63,6 +63,14 @@ struct FGomokuPlayerStateData
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gomoku|Items")
 	TArray<int32> ItemIds;
 
+	/** Items gained this turn: not usable until next turn (bGainedThisTurn semantics). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gomoku|Items")
+	TSet<int32> ItemIdsGainedThisTurn;
+
+	/** One item use allowed per turn. Set true when ExecuteItem succeeds for this player. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gomoku|Items")
+	bool bUsedItemThisTurn = false;
+
 	static FGomokuPlayerStateData CreateDefault(int32 InPlayerId, float InTimeLimit, int32 InInitialEnergy)
 	{
 		FGomokuPlayerStateData Data;
@@ -71,6 +79,7 @@ struct FGomokuPlayerStateData
 		Data.Energy = InInitialEnergy;
 		Data.bSkipNextTurn = false;
 		Data.bHasAbandoned = false;
+		Data.bUsedItemThisTurn = false;
 		return Data;
 	}
 };
@@ -97,6 +106,10 @@ struct FGomokuMatchConfig
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gomoku")
 	int32 InitialEnergyPerPlayer = 10;
+
+	/** Cells that are permanently blocked (no stone placement). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gomoku|Template")
+	TArray<FIntPoint> BlockedCells;
 
 	static FGomokuMatchConfig CreateDefault()
 	{

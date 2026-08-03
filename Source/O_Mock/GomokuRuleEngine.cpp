@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "GomokuRuleEngine.h"
+#include "GomokuItemLibrary.h"
 
 ECellState UGomokuRuleEngine::PlayerIdToCellState(int32 PlayerId)
 {
@@ -49,6 +50,18 @@ void UGomokuRuleEngine::InitializeMatch(const FGomokuMatchConfig& Config)
 
 	InitializeActivePlayerIndices();
 
+	// Apply template blocked cells (if any) after board reset.
+	for (const FIntPoint& BC : MatchConfig.BlockedCells)
+	{
+		if (!Board.IsInside(BC.X, BC.Y))
+			continue;
+		const ECellState Current = Board.Get(BC.X, BC.Y);
+		if (Current == ECellState::Empty)
+		{
+			Board.Set(BC.X, BC.Y, ECellState::Blocked);
+		}
+	}
+
 	CurrentPlayerIndex = 0;
 	bInitialized = true;
 }
@@ -64,6 +77,15 @@ void UGomokuRuleEngine::InitializeActivePlayerIndices()
 			ActivePlayerIndices.Add(i);
 		}
 	}
+}
+
+int32 UGomokuRuleEngine::GetSoleActivePlayerIndex() const
+{
+	if (ActivePlayerIndices.Num() == 1)
+	{
+		return ActivePlayerIndices[0];
+	}
+	return INDEX_NONE;
 }
 
 bool UGomokuRuleEngine::IsValidCoordinate(int32 X, int32 Y) const
@@ -148,6 +170,117 @@ bool UGomokuRuleEngine::ChangeCellOwnership(int32 X, int32 Y, int32 NewPlayerId)
 	return true;
 }
 
+bool UGomokuRuleEngine::ForcePlaceStone(int32 PlayerId, int32 X, int32 Y)
+{
+	if (!bInitialized || !IsValidCoordinate(X, Y))
+	{
+		return false;
+	}
+	if (GetCellState(X, Y) != ECellState::Empty)
+	{
+		return false;
+	}
+	const ECellState NewState = PlayerIdToCellState(PlayerId);
+	if (NewState == ECellState::Empty)
+	{
+		return false;
+	}
+	Board.Set(X, Y, NewState);
+	return true;
+}
+
+bool UGomokuRuleEngine::SetCellBlocked(int32 X, int32 Y, bool bBlocked)
+{
+	if (!IsValidCoordinate(X, Y))
+	{
+		return false;
+	}
+	if (bBlocked)
+	{
+		if (GetCellState(X, Y) != ECellState::Empty)
+		{
+			return false;
+		}
+		Board.Set(X, Y, ECellState::Blocked);
+		return true;
+	}
+	if (GetCellState(X, Y) == ECellState::Blocked)
+	{
+		Board.Set(X, Y, ECellState::Empty);
+		return true;
+	}
+	return false;
+}
+
+bool UGomokuRuleEngine::ConsumePlayerEnergy(int32 PlayerId, int32 Cost)
+{
+	if (FGomokuPlayerStateData* Player = FindPlayerMutable(PlayerId))
+	{
+		if (Player->Energy < Cost)
+		{
+			return false;
+		}
+		Player->Energy -= Cost;
+		return true;
+	}
+	return false;
+}
+
+bool UGomokuRuleEngine::AddPlayerEnergy(int32 PlayerId, int32 Amount, int32 MaxEnergy)
+{
+	if (FGomokuPlayerStateData* Player = FindPlayerMutable(PlayerId))
+	{
+		Player->Energy = FMath::Min(MaxEnergy, Player->Energy + Amount);
+		return true;
+	}
+	return false;
+}
+
+bool UGomokuRuleEngine::PlayerHasItem(int32 PlayerId, int32 ItemId) const
+{
+	if (ItemId <= 0 || !bInitialized)
+		return false;
+
+	const FGomokuPlayerStateData* Player = FindPlayer(PlayerId);
+	if (!Player)
+		return false;
+
+	return Player->ItemIds.Contains(ItemId);
+}
+
+bool UGomokuRuleEngine::RemoveItemFromInventory(int32 PlayerId, int32 ItemId)
+{
+	if (ItemId <= 0 || !bInitialized)
+		return false;
+
+	FGomokuPlayerStateData* Player = FindPlayerMutable(PlayerId);
+	if (!Player)
+		return false;
+
+	if (!Player->ItemIds.Contains(ItemId))
+		return false;
+
+	Player->ItemIds.RemoveSingle(ItemId);
+	return true;
+}
+
+bool UGomokuRuleEngine::AddItemToInventory(int32 PlayerId, int32 ItemId)
+{
+	if (ItemId <= 0 || !bInitialized)
+		return false;
+
+	// Contract: only registered item IDs may enter inventory.
+	if (!UGomokuItemLibrary::IsRegisteredItemId(ItemId))
+		return false;
+
+	FGomokuPlayerStateData* Player = FindPlayerMutable(PlayerId);
+	if (!Player)
+		return false;
+
+	Player->ItemIds.AddUnique(ItemId);
+	return true;
+}
+
 int32 UGomokuRuleEngine::GetCurrentPlayerId() const
 {
 	if (!bInitialized || !PlayerOrder.IsValidIndex(CurrentPlayerIndex))
@@ -159,42 +292,96 @@ int32 UGomokuRuleEngine::GetCurrentPlayerId() const
 
 void UGomokuRuleEngine::AdvanceTurn()
 {
-	if (!bInitialized || PlayerOrder.Num() == 0)
+	if (!bInitialized || ActivePlayerIndices.Num() == 0)
 	{
 		return;
 	}
 
-	const int32 ActiveCount = ActivePlayerIndices.Num();
-	if (ActiveCount == 0)
+	const int32 MaxAttempts = ActivePlayerIndices.Num();
+	for (int32 Step = 0; Step < MaxAttempts; ++Step)
 	{
-		return;
-	}
+		int32 CurrentActivePos = INDEX_NONE;
+		for (int32 i = 0; i < ActivePlayerIndices.Num(); ++i)
+		{
+			if (ActivePlayerIndices[i] == CurrentPlayerIndex)
+			{
+				CurrentActivePos = i;
+				break;
+			}
+		}
 
-	for (int32 Step = 0; Step < ActiveCount; ++Step)
-	{
-		CurrentPlayerIndex = AdvanceTurnIndex(CurrentPlayerIndex, TurnDirection);
+		if (CurrentActivePos == INDEX_NONE)
+		{
+			CurrentActivePos = 0;
+		}
+
+		const int32 Dir = (TurnDirection >= 0) ? 1 : -1;
+		int32 NextActivePos = CurrentActivePos + Dir;
+		const int32 A = ActivePlayerIndices.Num();
+		NextActivePos %= A;
+		if (NextActivePos < 0)
+		{
+			NextActivePos += A;
+		}
+
+		CurrentPlayerIndex = ActivePlayerIndices[NextActivePos];
 
 		const int32 NextPlayerId = PlayerOrder[CurrentPlayerIndex];
+		if (NextPlayerId <= 0)
+		{
+			continue;
+		}
+
 		if (FGomokuPlayerStateData* Player = FindPlayerMutable(NextPlayerId))
 		{
+			if (Player->bHasAbandoned)
+			{
+				continue;
+			}
+
 			if (Player->bSkipNextTurn)
 			{
 				Player->bSkipNextTurn = false;
 				continue;
 			}
 		}
+
 		return;
 	}
 }
 
 int32 UGomokuRuleEngine::AdvanceTurnIndex(int32 CurrentIndex, int32 Direction) const
 {
-	const int32 N = PlayerOrder.Num();
-	if (N <= 0) return 0;
+	if (ActivePlayerIndices.Num() == 0 || !bInitialized)
+	{
+		return 0;
+	}
 
-	int64 Next = static_cast<int64>(CurrentIndex) + static_cast<int64>(Direction);
-	Next = FMath::Max(Next, 0LL);
-	return static_cast<int32>(Next % N);
+	int32 ActivePos = INDEX_NONE;
+	for (int32 i = 0; i < ActivePlayerIndices.Num(); ++i)
+	{
+		if (ActivePlayerIndices[i] == CurrentIndex)
+		{
+			ActivePos = i;
+			break;
+		}
+	}
+
+	if (ActivePos == INDEX_NONE)
+	{
+		ActivePos = 0;
+	}
+
+	const int32 Dir = (Direction >= 0) ? 1 : -1;
+	int32 NextPos = ActivePos + Dir;
+	const int32 A = ActivePlayerIndices.Num();
+	NextPos %= A;
+	if (NextPos < 0)
+	{
+		NextPos += A;
+	}
+
+	return ActivePlayerIndices[NextPos];
 }
 
 void UGomokuRuleEngine::ReverseTurnDirection()
@@ -223,6 +410,16 @@ bool UGomokuRuleEngine::SetPlayerSkipNextTurn(int32 PlayerId, bool bSkip)
 		return true;
 	}
 	return false;
+}
+
+int32 UGomokuRuleEngine::AbandonPlayer(int32 PlayerId)
+{
+	if (FGomokuPlayerStateData* Player = FindPlayerMutable(PlayerId))
+	{
+		Player->bHasAbandoned = true;
+	}
+	InitializeActivePlayerIndices();
+	return ActivePlayerIndices.Num();
 }
 
 int32 UGomokuRuleEngine::CountRay(int32 X, int32 Y, int32 DX, int32 DY, ECellState State) const
@@ -360,4 +557,72 @@ FGomokuWinResult UGomokuRuleEngine::CheckWinAt(const FIntPoint& Cell) const
 		}
 	}
 	return Result;
+}
+
+void UGomokuRuleEngine::MarkItemGainedThisTurn(int32 PlayerId, int32 ItemId)
+{
+	if (!bInitialized || ItemId <= 0) return;
+	if (FGomokuPlayerStateData* P = FindPlayerMutable(PlayerId))
+		P->ItemIdsGainedThisTurn.Add(ItemId);
+}
+
+void UGomokuRuleEngine::ClearTurnItemLocksForPlayer(int32 PlayerId)
+{
+	if (!bInitialized) return;
+	if (FGomokuPlayerStateData* P = FindPlayerMutable(PlayerId))
+		P->ItemIdsGainedThisTurn.Reset();
+}
+
+void UGomokuRuleEngine::ResetUsedItemThisTurn(int32 PlayerId)
+{
+	if (!bInitialized) return;
+	if (FGomokuPlayerStateData* P = FindPlayerMutable(PlayerId))
+		P->bUsedItemThisTurn = false;
+}
+
+void UGomokuRuleEngine::SetUsedItemThisTurn(int32 PlayerId)
+{
+	if (!bInitialized) return;
+	if (FGomokuPlayerStateData* P = FindPlayerMutable(PlayerId))
+		P->bUsedItemThisTurn = true;
+}
+
+bool UGomokuRuleEngine::IsItemUsableNow(int32 PlayerId, int32 ItemId) const
+{
+	if (!bInitialized || ItemId <= 0) return false;
+	const FGomokuPlayerStateData* P = FindPlayer(PlayerId);
+	if (!P) return false;
+
+	if (!P->ItemIds.Contains(ItemId))
+		return false;
+
+	if (P->ItemIdsGainedThisTurn.Contains(ItemId))
+		return false;
+
+	if (P->bUsedItemThisTurn)
+		return false;
+
+	return true;
+}
+
+bool UGomokuRuleEngine::SetCellGuardianProtected(int32 X, int32 Y, bool bProtect)
+{
+	if (!IsValidCoordinate(X, Y)) return false;
+
+	const ECellState S = GetCellState(X, Y);
+	if (S == ECellState::Empty || S == ECellState::Blocked)
+		return false;
+
+	if (bProtect)
+		GuardianProtectedCells.Add(FIntPoint(X, Y));
+	else
+		GuardianProtectedCells.Remove(FIntPoint(X, Y));
+
+	return true;
+}
+
+bool UGomokuRuleEngine::IsCellGuardianProtected(int32 X, int32 Y) const
+{
+	if (!IsValidCoordinate(X, Y)) return false;
+	return GuardianProtectedCells.Contains(FIntPoint(X, Y));
 }
