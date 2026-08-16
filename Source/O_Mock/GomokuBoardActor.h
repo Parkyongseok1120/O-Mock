@@ -8,6 +8,9 @@
 #include "GomokuTypes.h"
 #include "GomokuBoardActor.generated.h"
 
+class USceneComponent;
+class UCameraComponent;
+
 UCLASS()
 class O_MOCK_API AGomokuBoardActor : public AActor
 {
@@ -16,7 +19,7 @@ class O_MOCK_API AGomokuBoardActor : public AActor
 public:
 	AGomokuBoardActor();
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gomoku|Board")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gomoku|Board", meta = (ClampMin = "1.0"))
 	float CellSize = 60.f;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Gomoku|Board")
@@ -45,6 +48,7 @@ public:
 
 protected:
 	virtual void BeginPlay() override;
+	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 	virtual void Tick(float DeltaSeconds) override;
 
 	UFUNCTION()
@@ -52,6 +56,15 @@ protected:
 
 	UFUNCTION()
 	void HandleMatchRestarted();
+
+	UFUNCTION()
+	void HandleReplicatedBoardChanged();
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Gomoku|Board")
+	TObjectPtr<USceneComponent> SceneRoot;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Gomoku|Camera")
+	TObjectPtr<UCameraComponent> BoardCamera;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Gomoku|Board")
 	TObjectPtr<UStaticMeshComponent> BoardPlane;
@@ -61,6 +74,8 @@ protected:
 
 private:
 	FVector GetBoardOrigin() const;
+	float GetEffectiveCellSize() const;
+	void RefreshFromReplicatedBoard();
 
 	UPROPERTY()
 	TArray<int32> AnimatingInstanceIndices;

@@ -29,6 +29,10 @@ int32 UGomokuRuleEngine::CellStateToPlayerId(ECellState State)
 
 void UGomokuRuleEngine::InitializeMatch(const FGomokuMatchConfig& Config)
 {
+	TurnDirection = 1;
+	GuardianProtectedCells.Reset();
+	LastItemWinResult = FGomokuWinResult();
+
 	MatchConfig = Config;
 	MatchConfig.BoardSizeX = FMath::Max(1, MatchConfig.BoardSizeX);
 	MatchConfig.BoardSizeY = FMath::Max(1, MatchConfig.BoardSizeY);
@@ -49,6 +53,13 @@ void UGomokuRuleEngine::InitializeMatch(const FGomokuMatchConfig& Config)
 	}
 
 	InitializeActivePlayerIndices();
+
+	// Build O(1) PlayerId -> index map.
+	PlayerIdToIndex.Reset();
+	for (int32 i = 0; i < Players.Num(); ++i)
+	{
+		PlayerIdToIndex.Add(Players[i].PlayerId, i);
+	}
 
 	// Apply template blocked cells (if any) after board reset.
 	for (const FIntPoint& BC : MatchConfig.BlockedCells)
@@ -105,7 +116,7 @@ FBoardCell UGomokuRuleEngine::GetBoardCell(int32 X, int32 Y) const
 
 bool UGomokuRuleEngine::TryPlaceStone(int32 PlayerId, int32 X, int32 Y)
 {
-	if (!bInitialized || !IsValidCoordinate(X, Y))
+	if (!bInitialized || IsGameOver() || !IsValidCoordinate(X, Y))
 	{
 		return false;
 	}
@@ -149,6 +160,11 @@ bool UGomokuRuleEngine::RemoveStoneAt(int32 X, int32 Y)
 
 bool UGomokuRuleEngine::ChangeCellOwnership(int32 X, int32 Y, int32 NewPlayerId)
 {
+	if (!IsActiveMatchPlayer(NewPlayerId))
+	{
+		return false;
+	}
+
 	if (!IsValidCoordinate(X, Y))
 	{
 		return false;
@@ -172,6 +188,11 @@ bool UGomokuRuleEngine::ChangeCellOwnership(int32 X, int32 Y, int32 NewPlayerId)
 
 bool UGomokuRuleEngine::ForcePlaceStone(int32 PlayerId, int32 X, int32 Y)
 {
+	if (!IsActiveMatchPlayer(PlayerId))
+	{
+		return false;
+	}
+
 	if (!bInitialized || !IsValidCoordinate(X, Y))
 	{
 		return false;
@@ -297,7 +318,7 @@ void UGomokuRuleEngine::AdvanceTurn()
 		return;
 	}
 
-	const int32 MaxAttempts = ActivePlayerIndices.Num();
+	const int32 MaxAttempts = PlayerOrder.Num();
 	for (int32 Step = 0; Step < MaxAttempts; ++Step)
 	{
 		int32 CurrentActivePos = INDEX_NONE;
@@ -310,21 +331,31 @@ void UGomokuRuleEngine::AdvanceTurn()
 			}
 		}
 
-		if (CurrentActivePos == INDEX_NONE)
-		{
-			CurrentActivePos = 0;
-		}
-
 		const int32 Dir = (TurnDirection >= 0) ? 1 : -1;
-		int32 NextActivePos = CurrentActivePos + Dir;
-		const int32 A = ActivePlayerIndices.Num();
-		NextActivePos %= A;
-		if (NextActivePos < 0)
+		int32 NextIndex = CurrentPlayerIndex;
+
+		if (CurrentActivePos != INDEX_NONE)
 		{
-			NextActivePos += A;
+			const int32 A = ActivePlayerIndices.Num();
+			int32 NextActivePos = (CurrentActivePos + Dir) % A;
+			if (NextActivePos < 0)
+			{
+				NextActivePos += A;
+			}
+			NextIndex = ActivePlayerIndices[NextActivePos];
+		}
+		else
+		{
+			// CurrentPlayerIndex may refer to a player who just abandoned. Walk the
+			// original player order so wrap-around still selects the adjacent active slot.
+			NextIndex = (CurrentPlayerIndex + Dir) % PlayerOrder.Num();
+			if (NextIndex < 0)
+			{
+				NextIndex += PlayerOrder.Num();
+			}
 		}
 
-		CurrentPlayerIndex = ActivePlayerIndices[NextActivePos];
+		CurrentPlayerIndex = NextIndex;
 
 		const int32 NextPlayerId = PlayerOrder[CurrentPlayerIndex];
 		if (NextPlayerId <= 0)
@@ -391,6 +422,12 @@ void UGomokuRuleEngine::ReverseTurnDirection()
 		return;
 	}
 	TurnDirection = (TurnDirection != 0) ? -TurnDirection : 1;
+}
+
+bool UGomokuRuleEngine::IsActiveMatchPlayer(int32 PlayerId) const
+{
+	const FGomokuPlayerStateData* P = FindPlayer(PlayerId);
+	return P != nullptr && !P->bHasAbandoned;
 }
 
 FGomokuPlayerStateData UGomokuRuleEngine::GetPlayerStateData(int32 PlayerId) const
@@ -500,26 +537,20 @@ bool UGomokuRuleEngine::IsGameOver() const
 
 FGomokuPlayerStateData* UGomokuRuleEngine::FindPlayerMutable(int32 PlayerId)
 {
-	for (FGomokuPlayerStateData& Player : Players)
-	{
-		if (Player.PlayerId == PlayerId)
-		{
-			return &Player;
-		}
-	}
-	return nullptr;
+	int32* IndexPtr = PlayerIdToIndex.Find(PlayerId);
+	if (!IndexPtr) return nullptr;
+	int32 Index = *IndexPtr;
+	if (!Players.IsValidIndex(Index)) return nullptr;
+	return &Players[Index];
 }
 
 const FGomokuPlayerStateData* UGomokuRuleEngine::FindPlayer(int32 PlayerId) const
 {
-	for (const FGomokuPlayerStateData& Player : Players)
-	{
-		if (Player.PlayerId == PlayerId)
-		{
-			return &Player;
-		}
-	}
-	return nullptr;
+	int32* IndexPtr = PlayerIdToIndex.Find(PlayerId);
+	if (!IndexPtr) return nullptr;
+	int32 Index = *IndexPtr;
+	if (!Players.IsValidIndex(Index)) return nullptr;
+	return &Players[Index];
 }
 
 bool UGomokuRuleEngine::IsBoardFull() const

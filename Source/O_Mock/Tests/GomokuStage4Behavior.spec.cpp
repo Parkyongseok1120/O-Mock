@@ -9,7 +9,7 @@
 #include "Engine/World.h"
 
 // Helper: create a rule engine with given MaxPlayers and BoardSize (square).
-static UGomokuRuleEngine* MakeEngine(int32 MaxPlayers, int32 BoardSize = 15)
+static UGomokuRuleEngine* MakeStage4Engine(int32 MaxPlayers, int32 BoardSize = 15)
 {
 	UObject* Outer = GetTransientPackage();
 
@@ -46,7 +46,7 @@ static TArray<int32> CollectTurnCycle(UGomokuRuleEngine* Engine, int32 NumTurns)
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FGomokuStage4_TurnCycle2Players, TEXT("Gomoku.Stage4.TurnCycle2Players"), EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 bool FGomokuStage4_TurnCycle2Players::RunTest(const FString& Parameters)
 {
-	auto* Engine = MakeEngine(2, 15);
+	auto* Engine = MakeStage4Engine(2, 15);
 	TArray<int32> Cycle = CollectTurnCycle(Engine, 4);
 
 	TArray<int32> Expected;
@@ -65,7 +65,7 @@ bool FGomokuStage4_TurnCycle2Players::RunTest(const FString& Parameters)
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FGomokuStage4_TurnCycle3Players, TEXT("Gomoku.Stage4.TurnCycle3Players"), EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 bool FGomokuStage4_TurnCycle3Players::RunTest(const FString& Parameters)
 {
-	auto* Engine = MakeEngine(3, 15);
+	auto* Engine = MakeStage4Engine(3, 15);
 	TArray<int32> Cycle = CollectTurnCycle(Engine, 6);
 
 	TArray<int32> Expected;
@@ -86,7 +86,7 @@ bool FGomokuStage4_TurnCycle3Players::RunTest(const FString& Parameters)
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FGomokuStage4_TurnCycle4Players, TEXT("Gomoku.Stage4.TurnCycle4Players"), EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 bool FGomokuStage4_TurnCycle4Players::RunTest(const FString& Parameters)
 {
-	auto* Engine = MakeEngine(4, 15);
+	auto* Engine = MakeStage4Engine(4, 15);
 	TArray<int32> Cycle = CollectTurnCycle(Engine, 8);
 
 	TArray<int32> Expected;
@@ -109,7 +109,7 @@ bool FGomokuStage4_TurnCycle4Players::RunTest(const FString& Parameters)
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FGomokuStage4_AbandonExcludesPlayer, TEXT("Gomoku.Stage4.AbandonExcludesPlayer"), EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 bool FGomokuStage4_AbandonExcludesPlayer::RunTest(const FString& Parameters)
 {
-	auto* Engine = MakeEngine(4);
+	auto* Engine = MakeStage4Engine(4);
 
 	// Abandon player with id 2 (index 1).
 	Engine->AbandonPlayer(2);
@@ -146,7 +146,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FGomokuStage4_SkipNextPlayer, TEXT("Gomoku.Stag
 bool FGomokuStage4_SkipNextPlayer::RunTest(const FString& Parameters)
 {
 	// PlayerId = index + 1. So SetPlayerSkipNextTurn(2) marks player at index 1 to be skipped next turn.
-	auto* Engine = MakeEngine(4);
+	auto* Engine = MakeStage4Engine(4);
 
 	if (!TestEqual(TEXT("Initial current player index"), Engine->GetCurrentPlayerIndex(), 0))
 		return false;
@@ -176,7 +176,7 @@ bool FGomokuStage4_SkipNextPlayer::RunTest(const FString& Parameters)
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FGomokuStage4_ReverseTurnOrder, TEXT("Gomoku.Stage4.ReverseTurnOrder"), EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 bool FGomokuStage4_ReverseTurnOrder::RunTest(const FString& Parameters)
 {
-	auto* Engine = MakeEngine(4);
+	auto* Engine = MakeStage4Engine(4);
 
 	// Set current to index 1.
 	Engine->SetCurrentPlayerIndex(1);
@@ -215,10 +215,24 @@ bool FGomokuStage4_ReverseTurnOrder::RunTest(const FString& Parameters)
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FGomokuStage4_AbandonLastPlayerAdvancesToFirst, TEXT("Gomoku.Stage4.AbandonLastPlayerAdvancesToFirst"), EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FGomokuStage4_AbandonLastPlayerAdvancesToFirst::RunTest(const FString& Parameters)
+{
+	auto* Engine = MakeStage4Engine(4);
+	Engine->SetCurrentPlayerIndex(3);
+	Engine->AbandonPlayer(4);
+	Engine->AdvanceTurn();
+
+	if (!TestEqual(TEXT("Turn advances from abandoned last player to first active player"), Engine->GetCurrentPlayerIndex(), 0))
+		return false;
+
+	return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FGomokuStage4_RoundNoDuplicateCompletion, TEXT("Gomoku.Stage4.RoundNoDuplicateCompletion"), EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 bool FGomokuStage4_RoundNoDuplicateCompletion::RunTest(const FString& Parameters)
 {
-	auto* Engine = MakeEngine(3);
+	auto* Engine = MakeStage4Engine(3);
 
 	TArray<int32> ActiveIndices = Engine->GetActivePlayerIndices();
 	if (!TestEqual(TEXT("Active indices count"), ActiveIndices.Num(), 3))
@@ -280,7 +294,7 @@ bool FGomokuStage4_RoundIncrementsOnlyAfterAllActive::RunTest(const FString& Par
 		return TestFalse(TEXT("SpawnActor AGomokuGameState failed"), true);
 	}
 
-	auto* Engine = MakeEngine(3, 15);
+	auto* Engine = MakeStage4Engine(3, 15);
 	GS->SetRuleEngineRef(Engine);
 
 	GS->InitializeForLocalHotseat_Implementation(3);
@@ -347,7 +361,7 @@ bool FGomokuStage4_InactiveExcludedFromRound::RunTest(const FString& Parameters)
 		return TestFalse(TEXT("SpawnActor AGomokuGameState failed"), true);
 	}
 
-	auto* Engine = MakeEngine(4, 15);
+	auto* Engine = MakeStage4Engine(4, 15);
 	GS->SetRuleEngineRef(Engine);
 
 	GS->InitializeForLocalHotseat_Implementation(4);
@@ -411,7 +425,7 @@ bool FGomokuStage4_TimeSystem3And4Players::RunTest(const FString& Parameters)
 		AGomokuGameState* GS = World->SpawnActor<AGomokuGameState>();
 		if (!GS || !GS->IsValidLowLevel()) { World->DestroyWorld(false); return TestFalse(TEXT("SpawnActor AGomokuGameState failed"), true); }
 
-		auto* Engine = MakeEngine(Players, 15);
+		auto* Engine = MakeStage4Engine(Players, 15);
 		GS->SetRuleEngineRef(Engine);
 		GS->InitializeForLocalHotseat_Implementation(Players);
 
@@ -438,7 +452,7 @@ bool FGomokuStage4_TimeSystem3And4Players::RunTest(const FString& Parameters)
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FGomokuStage4_Board21x21FourPlayers, TEXT("Gomoku.Stage4.Board21x21FourPlayers"), EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 bool FGomokuStage4_Board21x21FourPlayers::RunTest(const FString& Parameters)
 {
-	auto* Engine = MakeEngine(4, 21);
+	auto* Engine = MakeStage4Engine(4, 21);
 
 	FGomokuMatchConfig Config = Engine->GetMatchConfig();
 	if (!TestEqual(TEXT("BoardSizeX is 21"), Config.BoardSizeX, 21)) return false;

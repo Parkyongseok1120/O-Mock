@@ -37,7 +37,7 @@ public:
 	static bool ValidateTarget(UGomokuRuleEngine* Engine, int32 ItemId, const FIntPoint& TargetCell, int32 TargetPlayerIndex);
 
 	/**
-	 * Execute an item effect (stub for Stage 6; real effects in Stage 7).
+	 * Execute a validated item effect.
 	 * Validates ownership, removes item from inventory via RuleEngine.
 	 * Returns false if unknown or not yet implemented.
 	 */

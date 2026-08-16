@@ -12,7 +12,7 @@
  * Create with NewObject<UGomokuRuleEngine>() and call InitializeMatch.
  */
 UCLASS(BlueprintType)
-class UGomokuRuleEngine : public UObject
+class O_MOCK_API UGomokuRuleEngine : public UObject
 {
 	GENERATED_BODY()
 
@@ -173,6 +173,7 @@ private:
 	bool HasWinAt(int32 X, int32 Y) const;
 	FGomokuPlayerStateData* FindPlayerMutable(int32 PlayerId);
 	const FGomokuPlayerStateData* FindPlayer(int32 PlayerId) const;
+	bool IsActiveMatchPlayer(int32 PlayerId) const;
 
 	/** Compute next active player index using ActivePlayerIndices and Direction. */
 	int32 AdvanceTurnIndex(int32 CurrentIndex, int32 Direction) const;
@@ -206,4 +207,8 @@ private:
 	/** Cached win result from last item-driven board change (Steal/Pull). Set by GomokuItemLibrary. */
 	UPROPERTY()
 	FGomokuWinResult LastItemWinResult;
+
+	/** O(1) lookup: PlayerId -> index into Players. Kept in sync with InitializeMatch/AbandonPlayer.
+	 *  mutable so const FindPlayer can call TMap::Find without const_cast. */
+	mutable TMap<int32, int32> PlayerIdToIndex;
 };

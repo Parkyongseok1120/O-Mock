@@ -4,6 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "GameFramework/GameStateBase.h"
+
 #include "GomokuTypes.h"
 #include "GomokuRuleEngine.h"
 #include "GomokuMinigameTypes.h"
@@ -28,6 +29,7 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnMatchRestartedDelegate);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnMatchEndedDelegate, const FGomokuWinResult&, WinResult);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnPlayerTimeTick, int32, PlayerIndex, const FGomokuPlayerTimeState&, TimeState);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnMatchEventDelegate, const FMatchEvent&, Event);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnReplicatedBoardChangedDelegate);
 
 UCLASS()
 class O_MOCK_API AGomokuGameState : public AGameStateBase
@@ -46,47 +48,68 @@ public:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadWrite, Category = "Time")
 	float PersonalRecoveryRate = 0.35f;
 
-	UPROPERTY(BlueprintReadOnly, Category = "Gomoku|Match")
+	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Gomoku|Match")
 	int32 LocalPlayerCount = 2;
 
-	UPROPERTY(BlueprintReadOnly, Category = "Gomoku|Turn")
+	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Gomoku|Turn")
 	int32 CurrentRoundIndex = 0;
 
 	UPROPERTY(BlueprintReadOnly, Category = "Gomoku|Turn")
 	TSet<int32> PlayersCompletedThisRound;
 
-	UPROPERTY(BlueprintReadOnly, Category = "Gomoku|Turn")
+	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Gomoku|Turn")
 	int32 RoundTurnCount = 0;
 
-	UPROPERTY(BlueprintReadOnly, Category = "Gomoku|Turn")
+	UPROPERTY(ReplicatedUsing=OnRep_TurnState, BlueprintReadOnly, Category = "Gomoku|Turn")
 	int32 CurrentPlayerIndex = -1;
 
-	UPROPERTY(BlueprintReadOnly, Category = "Gomoku|Match")
+	UPROPERTY(ReplicatedUsing=OnRep_IsGameActive, BlueprintReadOnly, Category = "Gomoku|Match")
 	bool IsGameActive = false;
 
-	UPROPERTY(BlueprintReadOnly, Category = "Gomoku|Match")
+	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Gomoku|Match")
 	int32 WinnerPlayerIndex = INDEX_NONE;
 
-	UPROPERTY(BlueprintReadOnly, Category = "Time")
+	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Time")
 	bool bHasTimeSystem = true;
 
-	UPROPERTY(BlueprintReadOnly, Category = "Time")
+	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Time")
 	bool bTimePaused = false;
 
-	UPROPERTY(BlueprintReadOnly, Category = "Time")
+	UPROPERTY(ReplicatedUsing=OnRep_PlayerTimes, BlueprintReadOnly, Category = "Time")
 	TArray<FGomokuPlayerTimeState> PlayerTimes;
 
-	UPROPERTY(BlueprintReadOnly, Category = "Gomoku|Players")
+	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Gomoku|Players")
 	TArray<FLinearColor> PlayerColors;
 
-	UPROPERTY(BlueprintReadOnly, Category = "Time")
+	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Time")
 	FIntPoint HoveredCell = FIntPoint(-1, -1);
 
-	UPROPERTY(BlueprintReadOnly, Category = "Gomoku|Match")
+	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Gomoku|Match")
 	EMatchPhase MatchPhase = EMatchPhase::Waiting;
 
-	UPROPERTY(BlueprintReadOnly, Category = "Gomoku|Board")
+	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Gomoku|MiniGame")
+	bool bMiniGameActive = false;
+
+	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Gomoku|MiniGame")
+	float MiniGameRemainingTime = 0.0f;
+
+	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Gomoku|MiniGame")
+	FIntPoint MiniGameTargetCell = FIntPoint(-1, -1);
+
+	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Gomoku|MiniGame")
+	TArray<int32> MiniGameSubmittedPlayerIndices;
+
+	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Gomoku|MiniGame")
+	TArray<int32> MiniGameCorrectPlayerIndices;
+
+	UPROPERTY(ReplicatedUsing=OnRep_ReplicatedBoardCells, BlueprintReadOnly, Category = "Gomoku|Board")
 	TArray<ECellState> ReplicatedBoardCells;
+
+	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Gomoku|Board")
+	int32 ReplicatedBoardSizeX = 0;
+
+	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Gomoku|Board")
+	int32 ReplicatedBoardSizeY = 0;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Gomoku|Events")
 	TObjectPtr<UGomokuMatchEventLog> EventLog;
@@ -109,14 +132,21 @@ public:
 	UPROPERTY(BlueprintAssignable, Category = "Gomoku|Events")
 	FOnMatchEventDelegate OnMatchEvent;
 
+	UPROPERTY(BlueprintAssignable, Category = "Gomoku|Board")
+	FOnReplicatedBoardChangedDelegate OnReplicatedBoardChanged;
+
 	void SetRuleEngineRef(UGomokuRuleEngine* InRuleEngine);
 	UGomokuRuleEngine* GetRuleEngine() const { return RuleEngine.Get(); }
 
-	UFUNCTION(Server, Reliable)
+	UFUNCTION(BlueprintCallable, Category = "Gomoku|Match")
 	void InitializeForLocalHotseat(int32 MaxPlayers);
 
 	UFUNCTION(BlueprintCallable, Category = "Gomoku|Turn")
 	void HandlePlaceStone(int32 PlayerIndex, const FIntPoint& Cell);
+
+	/** Server-side item execution entry point. PlayerIndex is resolved from the requesting controller on network paths. */
+	UFUNCTION(BlueprintCallable, Category = "Gomoku|Items")
+	void HandleUseItem(int32 PlayerIndex, int32 ItemId, const FIntPoint& TargetCell, int32 TargetPlayerIndex = -1);
 
 	UFUNCTION(BlueprintCallable, Category = "Time")
 	void SetHoveredCell(const FIntPoint& InCell);
@@ -130,12 +160,21 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Gomoku|Match")
 	void SetMatchPhase(EMatchPhase NewPhase);
 
-	UFUNCTION(Server, Reliable)
+	UFUNCTION(BlueprintCallable, Category = "Gomoku|Match")
 	void RestartMatch();
 
 	/** Current player abandons their turn/position. If only one active player remains, they win. */
-	UFUNCTION(Server, Reliable)
+	UFUNCTION(BlueprintCallable, Category = "Gomoku|Match")
 	void RequestAbandonCurrentPlayer();
+
+	UFUNCTION(BlueprintCallable, Category = "Gomoku|MiniGame")
+	void StartMiniGame();
+
+	UFUNCTION(BlueprintCallable, Category = "Gomoku|MiniGame")
+	bool SubmitMiniGameAnswer(int32 PlayerIndex, const FIntPoint& AnswerCell);
+
+	UFUNCTION(BlueprintCallable, Category = "Gomoku|MiniGame")
+	void ResumeFromMiniGame();
 
 	UFUNCTION(BlueprintPure, Category = "Gomoku|UI")
 	int32 GetNextMinigameRound() const;
@@ -144,6 +183,7 @@ public:
 	int32 GetNumActivePlayers() const;
 
 	void SyncReplicatedBoard();
+	void SyncPlayerStates();
 
 	// Exposed for Stage 3 time-system tests.
 	UFUNCTION(BlueprintCallable, Category = "Gomoku|Time")
@@ -152,9 +192,17 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Gomoku|Time")
 	void ApplyEndOfRoundRecovery();
 
+	// regression_a: 기존 테스트에서 InitializeForLocalHotseat_Implementation / RequestAbandonCurrentPlayer_Implementation 호출을
+	// 공용 함수로 바꾼 뒤 제거할 임시 호환 코드 (RPC 없이 로컬 테스트 전용).
+#if WITH_DEV_AUTOMATION_TESTS
+	void InitializeForLocalHotseat_Implementation(int32 MaxPlayers) { InitializeForLocalHotseat(MaxPlayers); }
+	void RequestAbandonCurrentPlayer_Implementation() { RequestAbandonCurrentPlayer(); }
+#endif
+
 protected:
 	virtual void BeginPlay() override;
 	virtual void Tick(float DeltaTime) override;
+	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 
 private:
 	TWeakObjectPtr<UGomokuRuleEngine> RuleEngine;
@@ -164,4 +212,18 @@ private:
 	// bSkipCompletionTracking: when true, do not count current player as completed for this round (used by abandon).
 	void EndCurrentTurn(bool bForceEnd, bool bSkipCompletionTracking = false);
 	void AutoMoveOnTimeout();
+	void TickMiniGame(float DeltaSeconds);
+
+	// Replication callbacks
+	UFUNCTION()
+	void OnRep_TurnState();
+
+	UFUNCTION()
+	void OnRep_PlayerTimes();
+
+	UFUNCTION()
+	void OnRep_IsGameActive(bool bPreviousValue);
+
+	UFUNCTION()
+	void OnRep_ReplicatedBoardCells(const TArray<ECellState>& PreviousCells);
 };

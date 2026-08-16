@@ -4,38 +4,72 @@
 #include "Components/StaticMeshComponent.h"
 #include "Kismet/GameplayStatics.h"
 #include "GameFramework/PlayerController.h"
-#include "Camera/PlayerCameraManager.h"
+#include "Camera/CameraComponent.h"
 #include "GomokuGameState.h"
 
 AGomokuBoardActor::AGomokuBoardActor()
 {
 	PrimaryActorTick.bCanEverTick = true;
-	RootComponent = CreateDefaultSubobject<USceneComponent>(TEXT("Root"));
+
+	bReplicates = true;
+
+	SceneRoot = CreateDefaultSubobject<USceneComponent>(TEXT("SceneRoot"));
+	SetRootComponent(SceneRoot);
 
 	BoardPlane = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("BoardPlane"));
-	BoardPlane->SetupAttachment(RootComponent);
+	BoardPlane->SetupAttachment(SceneRoot);
 	BoardPlane->SetCollisionEnabled(ECollisionEnabled::QueryOnly);
 	BoardPlane->SetCollisionResponseToAllChannels(ECR_Ignore);
 	BoardPlane->SetCollisionResponseToChannel(ECC_Visibility, ECR_Block);
 
 	StoneInstances = CreateDefaultSubobject<UInstancedStaticMeshComponent>(TEXT("StoneInstances"));
-	StoneInstances->SetupAttachment(RootComponent);
+	StoneInstances->SetupAttachment(SceneRoot);
+
+	BoardCamera = CreateDefaultSubobject<UCameraComponent>(TEXT("BoardCamera"));
+	BoardCamera->SetupAttachment(SceneRoot);
+	BoardCamera->SetProjectionMode(ECameraProjectionMode::Orthographic);
+	BoardCamera->SetRelativeLocation(FVector(0.f, 0.f, 1000.f));
+	BoardCamera->SetRelativeRotation(FRotator(-90.f, 0.f, 0.f));
 }
 
 void AGomokuBoardActor::BeginPlay()
 {
 	Super::BeginPlay();
-	if (AGomokuGameState* GS = GetWorld()->GetGameState<AGomokuGameState>())
+
+	if (UWorld* World = GetWorld())
 	{
-		GS->OnStonePlaced.AddDynamic(this, &AGomokuBoardActor::HandleStonePlaced);
-		GS->OnMatchRestarted.AddDynamic(this, &AGomokuBoardActor::HandleMatchRestarted);
-		if (UGomokuRuleEngine* Engine = GS->GetRuleEngine())
+		if (AGomokuGameState* GS = World->GetGameState<AGomokuGameState>())
 		{
-			const FGomokuMatchConfig Cfg = Engine->GetMatchConfig();
-			ApplyBoardSize(Cfg.BoardSizeX, Cfg.BoardSizeY);
+			GS->OnStonePlaced.AddDynamic(this, &AGomokuBoardActor::HandleStonePlaced);
+			GS->OnMatchRestarted.AddDynamic(this, &AGomokuBoardActor::HandleMatchRestarted);
+			GS->OnReplicatedBoardChanged.AddDynamic(this, &AGomokuBoardActor::HandleReplicatedBoardChanged);
+			if (UGomokuRuleEngine* Engine = GS->GetRuleEngine())
+			{
+				const FGomokuMatchConfig Cfg = Engine->GetMatchConfig();
+				ApplyBoardSize(Cfg.BoardSizeX, Cfg.BoardSizeY);
+			}
+			else if (GS->ReplicatedBoardSizeX > 0 && GS->ReplicatedBoardSizeY > 0)
+			{
+				RefreshFromReplicatedBoard();
+			}
 		}
 	}
 	FitCameraToBoard();
+}
+
+void AGomokuBoardActor::EndPlay(const EEndPlayReason::Type EndPlayReason)
+{
+	if (UWorld* World = GetWorld())
+	{
+		if (AGomokuGameState* GS = World->GetGameState<AGomokuGameState>())
+		{
+			GS->OnStonePlaced.RemoveDynamic(this, &AGomokuBoardActor::HandleStonePlaced);
+			GS->OnMatchRestarted.RemoveDynamic(this, &AGomokuBoardActor::HandleMatchRestarted);
+			GS->OnReplicatedBoardChanged.RemoveDynamic(this, &AGomokuBoardActor::HandleReplicatedBoardChanged);
+		}
+	}
+
+	Super::EndPlay(EndPlayReason);
 }
 
 void AGomokuBoardActor::Tick(float DeltaSeconds)
@@ -78,21 +112,28 @@ void AGomokuBoardActor::ApplyBoardSize(int32 InSizeX, int32 InSizeY)
 void AGomokuBoardActor::FitCameraToBoard()
 {
 	APlayerController* PC = UGameplayStatics::GetPlayerController(GetWorld(), 0);
-	if (!PC || !PC->PlayerCameraManager)
+	if (!PC || !PC->IsLocalController() || !BoardCamera)
 	{
 		return;
 	}
-	const float Extent = FMath::Max(BoardSizeX, BoardSizeY) * CellSize * 0.55f;
-	const FVector CamLoc(0.f, 0.f, FMath::Max(800.f, Extent * 1.6f));
+
+	const float EffectiveCellSize = GetEffectiveCellSize();
+	const float OrthoWidth = FMath::Max(BoardSizeX, BoardSizeY) * EffectiveCellSize * 1.1f;
+	BoardCamera->SetOrthoWidth(OrthoWidth);
 	PC->SetViewTarget(this);
-	PC->SetInitialLocationAndRotation(CamLoc, FRotator(-90.f, 0.f, 0.f));
+}
+
+float AGomokuBoardActor::GetEffectiveCellSize() const
+{
+	return FMath::Max(CellSize, 1.0f);
 }
 
 FVector AGomokuBoardActor::GetBoardOrigin() const
 {
+	const float EffectiveCellSize = GetEffectiveCellSize();
 	return FVector(
-		-((BoardSizeX - 1) * CellSize) * 0.5f,
-		-((BoardSizeY - 1) * CellSize) * 0.5f,
+		-((BoardSizeX - 1) * EffectiveCellSize) * 0.5f,
+		-((BoardSizeY - 1) * EffectiveCellSize) * 0.5f,
 		0.f);
 }
 
@@ -102,15 +143,17 @@ FVector AGomokuBoardActor::GridToWorld(int32 X, int32 Y) const
 	{
 		return GetBoardOrigin();
 	}
+	const float EffectiveCellSize = GetEffectiveCellSize();
 	const FVector Origin = GetBoardOrigin();
-	return FVector(Origin.X + X * CellSize, Origin.Y + Y * CellSize, 5.f);
+	return FVector(Origin.X + X * EffectiveCellSize, Origin.Y + Y * EffectiveCellSize, 5.f);
 }
 
 bool AGomokuBoardActor::WorldToGrid(const FVector& WorldLoc, int32& OutX, int32& OutY) const
 {
+	const float EffectiveCellSize = GetEffectiveCellSize();
 	const FVector Origin = GetBoardOrigin();
-	const float DX = (WorldLoc.X - Origin.X) / CellSize;
-	const float DY = (WorldLoc.Y - Origin.Y) / CellSize;
+	const float DX = (WorldLoc.X - Origin.X) / EffectiveCellSize;
+	const float DY = (WorldLoc.Y - Origin.Y) / EffectiveCellSize;
 	const int32 GX = FMath::RoundToInt(DX);
 	const int32 GY = FMath::RoundToInt(DY);
 	if (GX < 0 || GY < 0 || GX >= BoardSizeX || GY >= BoardSizeY)
@@ -119,7 +162,7 @@ bool AGomokuBoardActor::WorldToGrid(const FVector& WorldLoc, int32& OutX, int32&
 	}
 	const FVector Center = GridToWorld(GX, GY);
 	const float Dist2D = FVector(WorldLoc.X - Center.X, WorldLoc.Y - Center.Y, 0.f).Size();
-	if (Dist2D > CellSize * 0.5f)
+	if (Dist2D > EffectiveCellSize * 0.5f)
 	{
 		return false;
 	}
@@ -161,6 +204,43 @@ void AGomokuBoardActor::HandleMatchRestarted()
 	ClearStones();
 }
 
+void AGomokuBoardActor::HandleReplicatedBoardChanged()
+{
+	if (!HasAuthority())
+	{
+		RefreshFromReplicatedBoard();
+	}
+}
+
+void AGomokuBoardActor::RefreshFromReplicatedBoard()
+{
+	if (!GetWorld())
+	{
+		return;
+	}
+
+	const AGomokuGameState* GS = GetWorld()->GetGameState<AGomokuGameState>();
+	if (!GS || GS->ReplicatedBoardSizeX <= 0 || GS->ReplicatedBoardSizeY <= 0)
+	{
+		return;
+	}
+
+	ApplyBoardSize(GS->ReplicatedBoardSizeX, GS->ReplicatedBoardSizeY);
+	ClearStones();
+	for (int32 Index = 0; Index < GS->ReplicatedBoardCells.Num(); ++Index)
+	{
+		const ECellState State = GS->ReplicatedBoardCells[Index];
+		if (State < ECellState::Player1 || State > ECellState::Player4)
+		{
+			continue;
+		}
+
+		const int32 X = Index % GS->ReplicatedBoardSizeX;
+		const int32 Y = Index / GS->ReplicatedBoardSizeX;
+		AddStoneAt(X, Y);
+	}
+}
+
 void AGomokuBoardActor::OnScreenClick(int32 ScreenX, int32 ScreenY)
 {
 	if (!GetWorld())
@@ -191,6 +271,7 @@ void AGomokuBoardActor::OnScreenClick(int32 ScreenX, int32 ScreenY)
 			return;
 		}
 		const float T = -WorldOrigin.Z / WorldDir.Z;
+		if (T < 0.f) { return; }
 		Hit.Location = WorldOrigin + WorldDir * T;
 	}
 

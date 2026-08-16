@@ -20,7 +20,7 @@ namespace
 			TArray<FStaticItemDef> Defs;
 			// 1=SealStone, cost1, Cell
 			Defs.Add(FStaticItemDef{1, EGomokuItemType::SealStone, 1, EItemTargetType::Cell});
-			// 2=Pull (stubbed in ExecuteItem)
+			// 2=Pull
 			Defs.Add(FStaticItemDef{2, EGomokuItemType::Pull, 1, EItemTargetType::Cell});
 			// 3=Steal
 			Defs.Add(FStaticItemDef{3, EGomokuItemType::Steal, 1, EItemTargetType::Cell});

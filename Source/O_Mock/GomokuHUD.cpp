@@ -6,6 +6,7 @@
 #include "Kismet/GameplayStatics.h"
 #include "GomokuGameMode.h"
 #include "GomokuPlayerController.h"
+#include "GomokuPlayerState.h"
 #include "Engine/Engine.h"
 
 AGomokuHUD::AGomokuHUD()
@@ -37,7 +38,11 @@ void AGomokuHUD::DrawHUD()
 	Super::DrawHUD();
 	if (!Canvas) return;
 	UFont* Font = GEngine ? GEngine->GetSmallFont() : nullptr;
-	const FString TextToDraw = bShowGameOver ? GameOverText : CurrentTurnText;
+	FString TextToDraw = bShowGameOver ? GameOverText : CurrentTurnText;
+	if (GomokuGameState && GomokuGameState->MatchPhase == EMatchPhase::MiniGamePlaying)
+	{
+		TextToDraw = FString::Printf(TEXT("Mini-game: choose a cell (%.1fs)"), GomokuGameState->MiniGameRemainingTime);
+	}
 	if (!TextToDraw.IsEmpty())
 	{
 		DrawText(TextToDraw, FLinearColor::White, 40.f, 65.f, Font, 1.2f, false);
@@ -47,6 +52,13 @@ void AGomokuHUD::DrawHUD()
 		DrawText(TEXT("Press R to restart"), FLinearColor::Yellow, 40.f, 105.f, Font, 1.0f, false);
 	}
 	float Y = 140.f;
+	if (GomokuGameState)
+	{
+		const FString RoundText = FString::Printf(TEXT("Round %d | Phase %d"),
+			GomokuGameState->CurrentRoundIndex, static_cast<int32>(GomokuGameState->MatchPhase));
+		DrawText(RoundText, FLinearColor(0.7f, 0.85f, 1.f), 40.f, Y, Font, 1.0f, false);
+		Y += 22.f;
+	}
 	for (int32 i = 0; i < PlayerTimeStrings.Num(); ++i)
 	{
 		if (!PlayerTimeStrings[i].IsEmpty())
@@ -56,7 +68,7 @@ void AGomokuHUD::DrawHUD()
 		}
 	}
 
-	// Item targeting / inventory HUD (Stage6 placeholder)
+	// Item targeting and the local player's inventory.
 	if (AGomokuPlayerController* PC = Cast<AGomokuPlayerController>(GetOwningPlayerController()))
 	{
 		if (PC->bItemTargetingActive && PC->SelectedItemId > 0)
@@ -67,7 +79,26 @@ void AGomokuHUD::DrawHUD()
 		}
 		else
 		{
-			DrawText(TEXT("ItemSlots: [placeholder]"), FLinearColor(0.5f, 0.5f, 0.7f), 40.f, Y, Font, 1.0f, false);
+			TArray<int32> ItemIds;
+			int32 Energy = 0;
+			if (const AGomokuPlayerState* PlayerState = PC->GetPlayerState<AGomokuPlayerState>())
+			{
+				ItemIds = PlayerState->InventoryItemIds;
+				Energy = PlayerState->Energy;
+			}
+			else if (GomokuGameState && GomokuGameState->GetRuleEngine() && GomokuGameState->CurrentPlayerIndex >= 0)
+			{
+				const FGomokuPlayerStateData Data = GomokuGameState->GetRuleEngine()->GetPlayerStateData(GomokuGameState->CurrentPlayerIndex + 1);
+				ItemIds = Data.ItemIds;
+				Energy = Data.Energy;
+			}
+
+			FString InventoryText = FString::Printf(TEXT("Energy: %d | Items:"), Energy);
+			for (const int32 ItemId : ItemIds)
+			{
+				InventoryText += FString::Printf(TEXT(" %d"), ItemId);
+			}
+			DrawText(InventoryText, FLinearColor(0.5f, 0.8f, 0.7f), 40.f, Y, Font, 1.0f, false);
 		}
 	}
 }

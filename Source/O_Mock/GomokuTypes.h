@@ -192,5 +192,5 @@ struct FGomokuWinResult
 	int32 WinnerPlayerIndex = INDEX_NONE;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gomoku|Win")
-	FIntPoint WinCell;
+	FIntPoint WinCell = FIntPoint(-1, -1);
 };
