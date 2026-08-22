@@ -49,6 +49,12 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Gomoku|Board")
 	bool SetCellBlocked(int32 X, int32 Y, bool bBlocked);
 
+	/** Atomically moves one of PlayerId's stones to an empty destination. */
+	bool MoveStone(int32 PlayerId, const FIntPoint& Source, const FIntPoint& Destination);
+
+	/** A stone is isolated when none of its owner's stones occupy the eight neighbouring cells. */
+	bool IsStoneIsolated(const FIntPoint& Cell) const;
+
 	UFUNCTION(BlueprintCallable, Category = "Gomoku|Items")
 	bool ConsumePlayerEnergy(int32 PlayerId, int32 Cost);
 
@@ -95,6 +101,10 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Gomoku|Items")
 	bool IsCellGuardianProtected(int32 X, int32 Y) const;
 
+	bool ApplyTemporaryBlock(const FIntPoint& Cell, int32 ExpireAfterRound);
+	bool ApplyGuardianProtection(const FIntPoint& Cell, int32 ExpireAfterRound);
+	void ExpireRoundEffects(int32 CompletedRoundIndex);
+
 	UFUNCTION(BlueprintPure, Category = "Gomoku|Turn")
 	int32 GetCurrentPlayerId() const;
 
@@ -113,6 +123,9 @@ public:
 
 	UFUNCTION(BlueprintPure, Category = "Gomoku|Turn")
 	TArray<int32> GetActivePlayerIndices() const { return ActivePlayerIndices; }
+
+	int32 ResolveActivePlayerId(int32 ActivePlayerListIndex) const;
+	bool IsPlayerActive(int32 PlayerId) const { return IsActiveMatchPlayer(PlayerId); }
 
 	UFUNCTION(BlueprintPure, Category = "Gomoku|Turn")
 	int32 GetCurrentPlayerIndex() const { return CurrentPlayerIndex; }
@@ -200,9 +213,15 @@ private:
 	UPROPERTY()
 	bool bInitialized = false;
 
-	/** Cells protected by GuardianBarrier (Stage 7). */
+	/** Round-indexed temporary cell effects. MAX_int32 represents an explicit permanent test/editor effect. */
 	UPROPERTY()
-	TSet<FIntPoint> GuardianProtectedCells;
+	TMap<FIntPoint, int32> GuardianProtectionExpireRounds;
+
+	UPROPERTY()
+	TMap<FIntPoint, int32> TemporaryBlockedCellExpireRounds;
+
+	UPROPERTY()
+	int32 LastSkipTargetPlayerId = INDEX_NONE;
 
 	/** Cached win result from last item-driven board change (Steal/Pull). Set by GomokuItemLibrary. */
 	UPROPERTY()

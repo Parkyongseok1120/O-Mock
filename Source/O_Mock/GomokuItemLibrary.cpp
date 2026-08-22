@@ -1,230 +1,236 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "GomokuItemLibrary.h"
-#include "Misc/AutomationTest.h"
 
-namespace
+struct FGomokuStaticItemDef
 {
-	/** Minimal item data table: maps ItemId -> (Type, Cost, TargetType). */
-	struct FStaticItemDef
-	{
-		int32 Id;
-		EGomokuItemType Type;
-		int32 EnergyCost;
-		EItemTargetType TargetType;
-	};
+	int32 Id;
+	EGomokuItemType Type;
+	int32 EnergyCost;
+	EItemTargetType TargetType;
+};
 
-	const TArray<FStaticItemDef>& GetStaticItemDefs()
-	{
-		static const auto Init = []() {
-			TArray<FStaticItemDef> Defs;
-			// 1=SealStone, cost1, Cell
-			Defs.Add(FStaticItemDef{1, EGomokuItemType::SealStone, 1, EItemTargetType::Cell});
-			// 2=Pull
-			Defs.Add(FStaticItemDef{2, EGomokuItemType::Pull, 1, EItemTargetType::Cell});
-			// 3=Steal
-			Defs.Add(FStaticItemDef{3, EGomokuItemType::Steal, 1, EItemTargetType::Cell});
-			// 4=SkipTurn (target is player)
-			Defs.Add(FStaticItemDef{4, EGomokuItemType::SkipTurn, 1, EItemTargetType::Player});
-			// 5=GuardianBarrier
-			Defs.Add(FStaticItemDef{5, EGomokuItemType::GuardianBarrier, 1, EItemTargetType::Cell});
-			return Defs;
-		}();
-		return Init;
-	}
+static const FGomokuStaticItemDef GomokuItemDefinitions[] =
+{
+	{1, EGomokuItemType::SealStone, 1, EItemTargetType::Cell},
+	{2, EGomokuItemType::Pull, 1, EItemTargetType::Cell},
+	{3, EGomokuItemType::Steal, 3, EItemTargetType::Cell},
+	{4, EGomokuItemType::SkipTurn, 3, EItemTargetType::Player},
+	{5, EGomokuItemType::GuardianBarrier, 2, EItemTargetType::Cell}
+};
 
-	const FStaticItemDef* GetItemData(int32 ItemId)
+static const FIntPoint GomokuCardinalDirections[] =
+{
+	FIntPoint(0, 1),
+	FIntPoint(1, 0),
+	FIntPoint(0, -1),
+	FIntPoint(-1, 0)
+};
+
+static const FGomokuStaticItemDef* FindGomokuItemDefinition(int32 ItemId)
+{
+	for (const FGomokuStaticItemDef& Definition : GomokuItemDefinitions)
 	{
-		const auto& Defs = GetStaticItemDefs();
-		for (const auto& Def : Defs)
+		if (Definition.Id == ItemId)
 		{
-			if (Def.Id == ItemId)
-				return &Def;
+			return &Definition;
 		}
-		return nullptr;
 	}
+	return nullptr;
+}
+
+static bool FindPullSource(UGomokuRuleEngine* Engine, int32 PlayerId, const FIntPoint& Destination,
+	FIntPoint& OutSource)
+{
+	if (!Engine || !Engine->IsValidEmpty(Destination))
+	{
+		return false;
+	}
+
+	for (const FIntPoint& Direction : GomokuCardinalDirections)
+	{
+		const FIntPoint Candidate = Destination + Direction;
+		if (!Engine->IsValidCoordinate(Candidate.X, Candidate.Y)
+			|| Engine->IsCellGuardianProtected(Candidate.X, Candidate.Y))
+		{
+			continue;
+		}
+
+		const FBoardCell SourceCell = Engine->GetBoardCell(Candidate.X, Candidate.Y);
+		if (UGomokuRuleEngine::CellStateToPlayerId(SourceCell.State) == PlayerId)
+		{
+			OutSource = Candidate;
+			return true;
+		}
+	}
+
+	return false;
 }
 
 bool UGomokuItemLibrary::IsRegisteredItemId(int32 ItemId)
 {
-	return GetItemData(ItemId) != nullptr;
+	return FindGomokuItemDefinition(ItemId) != nullptr;
 }
 
 bool UGomokuItemLibrary::CanUseItem(UGomokuRuleEngine* Engine, int32 PlayerId, int32 ItemId)
 {
-	if (!Engine || !Engine->IsMatchInitialized())
-		return false;
-
-	if (ItemId <= 0 || PlayerId <= 0)
-		return false;
-
-	// Contract: only registered items may be used.
-	if (!IsRegisteredItemId(ItemId))
-		return false;
-
-	// Stage 7: use IsItemUsableNow instead of raw PlayerHasItem.
-	return Engine->IsItemUsableNow(PlayerId, ItemId);
+	return Engine
+		&& Engine->IsMatchInitialized()
+		&& PlayerId > 0
+		&& Engine->IsPlayerActive(PlayerId)
+		&& IsRegisteredItemId(ItemId)
+		&& Engine->IsItemUsableNow(PlayerId, ItemId);
 }
 
-bool UGomokuItemLibrary::ValidateTarget(UGomokuRuleEngine* Engine, int32 ItemId, const FIntPoint& TargetCell, int32 TargetPlayerIndex)
+bool UGomokuItemLibrary::ValidateTarget(UGomokuRuleEngine* Engine, int32 ItemId,
+	const FIntPoint& TargetCell, int32 TargetPlayerIndex)
 {
-	if (!Engine || !Engine->IsMatchInitialized())
-		return false;
-	if (ItemId <= 0)
-		return false;
-
-	const auto* Def = GetItemData(ItemId);
-	if (!Def)
-		return false;
-
-	switch (Def->TargetType)
-	{
-	case EItemTargetType::Cell:
-	{
-		if (TargetCell.X < 0 || TargetCell.Y < 0)
-			return false;
-		if (!Engine->IsValidCoordinate(TargetCell.X, TargetCell.Y))
-			return false;
-
-		switch (Def->Type)
-		{
-		case EGomokuItemType::SealStone:
-		{
-			const auto C = Engine->GetBoardCell(TargetCell.X, TargetCell.Y);
-			if (C.State != ECellState::Empty) return false;
-			break;
-		}
-		case EGomokuItemType::Steal:
-		{
-			if (Engine->IsCellGuardianProtected(TargetCell.X, TargetCell.Y)) return false;
-			const auto C = Engine->GetBoardCell(TargetCell.X, TargetCell.Y);
-			if (C.State == ECellState::Empty || C.State == ECellState::Blocked) return false;
-			const int32 OwnerId = UGomokuRuleEngine::CellStateToPlayerId(C.State);
-			if (OwnerId <= 0) return false;
-			break;
-		}
-		case EGomokuItemType::Pull:
-		{
-			const auto Dest = Engine->GetBoardCell(TargetCell.X, TargetCell.Y);
-			if (Dest.State != ECellState::Empty) return false;
-			static const int32 DXs[4] = {0,1,0,-1};
-			static const int32 DYs[4] = {1,0,-1,0};
-			bool bFound = false;
-			for (int32 i = 0; i < 4; ++i)
-			{
-				const int32 SX = TargetCell.X + DXs[i];
-				const int32 SY = TargetCell.Y + DYs[i];
-				if (!Engine->IsValidCoordinate(SX, SY)) continue;
-				if (Engine->IsCellGuardianProtected(SX, SY)) continue;
-				const auto S = Engine->GetBoardCell(SX, SY);
-				if (S.State == ECellState::Empty || S.State == ECellState::Blocked) continue;
-				const int32 OwnerId = UGomokuRuleEngine::CellStateToPlayerId(S.State);
-				if (OwnerId > 0) { bFound = true; break; }
-			}
-			if (!bFound) return false;
-			break;
-		}
-		case EGomokuItemType::GuardianBarrier:
-		{
-			const auto C = Engine->GetBoardCell(TargetCell.X, TargetCell.Y);
-			if (C.State == ECellState::Empty) return false;
-			break;
-		}
-		}
-		return true;
-	}
-	case EItemTargetType::Player:
-	{
-		if (TargetPlayerIndex < 0) return false;
-		const auto& A = Engine->GetActivePlayerIndices();
-		if (TargetPlayerIndex >= A.Num()) return false;
-		return true;
-	}
-	case EItemTargetType::Self:
-		return true;
-	default:
-		return false;
-	}
+	const int32 CurrentPlayerId = Engine ? Engine->GetCurrentPlayerId() : INDEX_NONE;
+	return ValidateTargetForPlayer(Engine, CurrentPlayerId, ItemId, TargetCell, TargetPlayerIndex);
 }
 
-bool UGomokuItemLibrary::ExecuteItem(UGomokuRuleEngine* Engine, int32 ItemId, int32 PlayerId, const FIntPoint& TargetCell, int32 TargetPlayerIndex)
+bool UGomokuItemLibrary::ValidateTargetForPlayer(UGomokuRuleEngine* Engine, int32 PlayerId, int32 ItemId,
+	const FIntPoint& TargetCell, int32 TargetPlayerIndex)
 {
-	if (!Engine || !Engine->IsMatchInitialized()) return false;
-	if (ItemId <= 0 || PlayerId <= 0) return false;
+	if (!Engine || !Engine->IsMatchInitialized() || !Engine->IsPlayerActive(PlayerId))
+	{
+		return false;
+	}
 
-	const auto* Def = GetItemData(ItemId);
-	if (!Def) return false;
-	if (!Engine->IsItemUsableNow(PlayerId, ItemId)) return false;
-	if (!ValidateTarget(Engine, ItemId, TargetCell, TargetPlayerIndex)) return false;
+	const FGomokuStaticItemDef* Definition = FindGomokuItemDefinition(ItemId);
+	if (!Definition)
+	{
+		return false;
+	}
 
-	// Pre-check energy without consuming yet.
-	if (Engine->GetPlayerStateData(PlayerId).Energy < Def->EnergyCost) return false;
+	if (Definition->TargetType == EItemTargetType::Player)
+	{
+		const int32 TargetPlayerId = Engine->ResolveActivePlayerId(TargetPlayerIndex);
+		const TArray<int32>& ActiveIndices = Engine->GetActivePlayerIndices();
+		const int32 CurrentPlayerIndex = PlayerId - 1;
+		const int32 CurrentActivePosition = ActiveIndices.IndexOfByKey(CurrentPlayerIndex);
+		if (TargetPlayerId <= 0 || CurrentActivePosition == INDEX_NONE || ActiveIndices.Num() <= 1)
+		{
+			return false;
+		}
+		const int32 Direction = Engine->TurnDirection >= 0 ? 1 : -1;
+		const int32 ExpectedTargetPosition = (CurrentActivePosition + Direction + ActiveIndices.Num()) % ActiveIndices.Num();
+		return TargetPlayerIndex == ExpectedTargetPosition && TargetPlayerId != PlayerId;
+	}
 
-	switch (Def->Type)
+	if (Definition->TargetType == EItemTargetType::Self)
+	{
+		return true;
+	}
+
+	if (Definition->TargetType != EItemTargetType::Cell
+		|| !Engine->IsValidCoordinate(TargetCell.X, TargetCell.Y))
+	{
+		return false;
+	}
+
+	const FBoardCell Target = Engine->GetBoardCell(TargetCell.X, TargetCell.Y);
+	switch (Definition->Type)
 	{
 	case EGomokuItemType::SealStone:
-	{
-		const auto C = Engine->GetBoardCell(TargetCell.X, TargetCell.Y);
-		if (C.State != ECellState::Empty) return false;
-		if (!Engine->SetCellBlocked(TargetCell.X, TargetCell.Y, true)) return false;
-		break;
-	}
-	case EGomokuItemType::SkipTurn:
-	{
-		const int32 TgtId = (TargetPlayerIndex + 1);
-		if (!Engine->SetPlayerSkipNextTurn(TgtId, true)) return false;
-		break;
-	}
-	case EGomokuItemType::Steal:
-	{
-		if (Engine->IsCellGuardianProtected(TargetCell.X, TargetCell.Y)) return false;
-		const auto C = Engine->GetBoardCell(TargetCell.X, TargetCell.Y);
-		if (C.State == ECellState::Empty || C.State == ECellState::Blocked) return false;
-		if (!Engine->ChangeCellOwnership(TargetCell.X, TargetCell.Y, PlayerId)) return false;
-		Engine->SetLastItemWinResult(Engine->CheckWinAt(TargetCell));
-		break;
-	}
-	case EGomokuItemType::GuardianBarrier:
-	{
-		const auto C = Engine->GetBoardCell(TargetCell.X, TargetCell.Y);
-		if (C.State == ECellState::Empty) return false;
-		if (!Engine->SetCellGuardianProtected(TargetCell.X, TargetCell.Y, true)) return false;
-		break;
-	}
+		return Target.State == ECellState::Empty;
+
 	case EGomokuItemType::Pull:
 	{
-		int32 SrcX = -1, SrcY = -1, OwnerId = 0;
-		static const int32 DXs[4] = {0,1,0,-1};
-		static const int32 DYs[4] = {1,0,-1,0};
-		for (int32 i = 0; i < 4; ++i)
-		{
-			const int32 SX = TargetCell.X + DXs[i];
-			const int32 SY = TargetCell.Y + DYs[i];
-			if (!Engine->IsValidCoordinate(SX, SY)) continue;
-			if (Engine->IsCellGuardianProtected(SX, SY)) continue;
-			const auto S = Engine->GetBoardCell(SX, SY);
-			if (S.State == ECellState::Empty || S.State == ECellState::Blocked) continue;
-			OwnerId = UGomokuRuleEngine::CellStateToPlayerId(S.State);
-			if (OwnerId <= 0) continue;
-			SrcX = SX; SrcY = SY; break;
-		}
-		if (SrcX < 0) return false;
-
-		const auto Dest = Engine->GetBoardCell(TargetCell.X, TargetCell.Y);
-		if (Dest.State != ECellState::Empty) return false;
-
-		if (!Engine->RemoveStoneAt(SrcX, SrcY)) return false;
-		if (!Engine->ForcePlaceStone(OwnerId, TargetCell.X, TargetCell.Y)) return false;
-		Engine->SetLastItemWinResult(Engine->CheckWinAt(TargetCell));
-		break;
+		FIntPoint Source;
+		return FindPullSource(Engine, PlayerId, TargetCell, Source);
 	}
+
+	case EGomokuItemType::Steal:
+	{
+		const int32 OwnerId = UGomokuRuleEngine::CellStateToPlayerId(Target.State);
+		return OwnerId > 0
+			&& OwnerId != PlayerId
+			&& !Engine->IsCellGuardianProtected(TargetCell.X, TargetCell.Y)
+			&& Engine->IsStoneIsolated(TargetCell);
+	}
+
+	case EGomokuItemType::GuardianBarrier:
+		return UGomokuRuleEngine::CellStateToPlayerId(Target.State) == PlayerId
+			&& !Engine->IsCellGuardianProtected(TargetCell.X, TargetCell.Y);
+
 	default:
 		return false;
 	}
+}
 
-	// Consume energy after successful effect.
-	if (!Engine->ConsumePlayerEnergy(PlayerId, Def->EnergyCost)) return false;
-	if (!Engine->RemoveItemFromInventory(PlayerId, ItemId)) return false;
+bool UGomokuItemLibrary::ExecuteItem(UGomokuRuleEngine* Engine, int32 ItemId, int32 PlayerId,
+	const FIntPoint& TargetCell, int32 TargetPlayerIndex, int32 CurrentRoundIndex)
+{
+	const FGomokuStaticItemDef* Definition = FindGomokuItemDefinition(ItemId);
+	if (!Definition
+		|| !CanUseItem(Engine, PlayerId, ItemId)
+		|| !ValidateTargetForPlayer(Engine, PlayerId, ItemId, TargetCell, TargetPlayerIndex)
+		|| Engine->GetPlayerStateData(PlayerId).Energy < Definition->EnergyCost)
+	{
+		return false;
+	}
+	if (!Engine->ConsumePlayerEnergy(PlayerId, Definition->EnergyCost))
+	{
+		return false;
+	}
+	if (!Engine->RemoveItemFromInventory(PlayerId, ItemId))
+	{
+		Engine->AddPlayerEnergy(PlayerId, Definition->EnergyCost, MaxEnergy);
+		return false;
+	}
 	Engine->SetUsedItemThisTurn(PlayerId);
+
+	bool bEffectApplied = false;
+	switch (Definition->Type)
+	{
+	case EGomokuItemType::SealStone:
+		bEffectApplied = Engine->ApplyTemporaryBlock(TargetCell, CurrentRoundIndex + 1);
+		break;
+
+	case EGomokuItemType::Pull:
+	{
+		FIntPoint Source;
+		bEffectApplied = FindPullSource(Engine, PlayerId, TargetCell, Source)
+			&& Engine->MoveStone(PlayerId, Source, TargetCell);
+		if (bEffectApplied)
+		{
+			Engine->SetLastItemWinResult(Engine->CheckWinAt(TargetCell));
+		}
+		break;
+	}
+
+	case EGomokuItemType::Steal:
+		bEffectApplied = Engine->ChangeCellOwnership(TargetCell.X, TargetCell.Y, PlayerId);
+		if (bEffectApplied)
+		{
+			Engine->SetLastItemWinResult(Engine->CheckWinAt(TargetCell));
+		}
+		break;
+
+	case EGomokuItemType::SkipTurn:
+	{
+		const int32 TargetPlayerId = Engine->ResolveActivePlayerId(TargetPlayerIndex);
+		bEffectApplied = Engine->SetPlayerSkipNextTurn(TargetPlayerId, true);
+		break;
+	}
+
+	case EGomokuItemType::GuardianBarrier:
+		bEffectApplied = Engine->ApplyGuardianProtection(TargetCell, CurrentRoundIndex + 2);
+		break;
+
+	default:
+		break;
+	}
+
+	if (!bEffectApplied)
+	{
+		const bool bEnergyRestored = Engine->AddPlayerEnergy(PlayerId, Definition->EnergyCost, MaxEnergy);
+		const bool bItemRestored = Engine->AddItemToInventory(PlayerId, ItemId);
+		Engine->ResetUsedItemThisTurn(PlayerId);
+		ensureAlwaysMsgf(bEnergyRestored && bItemRestored,
+			TEXT("Failed to roll back Gomoku item %d for player %d."), ItemId, PlayerId);
+		return false;
+	}
 	return true;
 }

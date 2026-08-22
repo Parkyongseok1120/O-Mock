@@ -52,17 +52,20 @@ bool FGomokuStage11_MiniGameLocksAndResumesMatch::RunTest(const FString& Paramet
 	const int32 EnergyBefore = Engine->GetPlayerStateData(1).Energy;
 
 	GameState->StartMiniGame();
-	const FIntPoint Target = GameState->MiniGameTargetCell;
+	const FIntPoint Target(5, 3);
 	if (!TestEqual(TEXT("Mini game phase"), GameState->MatchPhase, EMatchPhase::MiniGamePlaying) ||
 		!TestTrue(TEXT("Main turn timer is paused"), GameState->bTimePaused) ||
-		!TestTrue(TEXT("Mini game is active"), GameState->bMiniGameActive))
+		!TestTrue(TEXT("Mini game is active"), GameState->bMiniGameActive) ||
+		!TestEqual(TEXT("Public puzzle contains 49 cells"), GameState->MiniGamePuzzleCells.Num(), 49) ||
+		!TestEqual(TEXT("Answer location is presented as an empty playable cell"),
+			GameState->MiniGamePuzzleCells[Target.Y * 7 + Target.X], ECellState::Empty))
 	{
 		World->DestroyWorld(false);
 		return false;
 	}
 
 	if (!TestTrue(TEXT("Correct answer is accepted"), GameState->SubmitMiniGameAnswer(0, Target)) ||
-		!TestEqual(TEXT("Correct answer grants energy"), Engine->GetPlayerStateData(1).Energy, EnergyBefore + 1) ||
+		!TestEqual(TEXT("First correct answer grants rank-one energy"), Engine->GetPlayerStateData(1).Energy, EnergyBefore + 3) ||
 		!TestFalse(TEXT("Duplicate answer is rejected"), GameState->SubmitMiniGameAnswer(0, Target)))
 	{
 		World->DestroyWorld(false);

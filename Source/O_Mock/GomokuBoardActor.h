@@ -10,6 +10,16 @@
 
 class USceneComponent;
 class UCameraComponent;
+class UMaterialInterface;
+class UMaterialInstanceDynamic;
+class APlayerController;
+
+struct FGomokuAnimatingStone
+{
+	TWeakObjectPtr<UInstancedStaticMeshComponent> Component;
+	int32 InstanceIndex = INDEX_NONE;
+	FVector TargetScale = FVector::OneVector;
+};
 
 UCLASS()
 class O_MOCK_API AGomokuBoardActor : public AActor
@@ -25,6 +35,21 @@ public:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Gomoku|Board")
 	TObjectPtr<UInstancedStaticMeshComponent> StoneInstances;
 
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Gomoku|Board")
+	TObjectPtr<UInstancedStaticMeshComponent> StoneInstancesPlayer2;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Gomoku|Board")
+	TObjectPtr<UInstancedStaticMeshComponent> StoneInstancesPlayer3;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Gomoku|Board")
+	TObjectPtr<UInstancedStaticMeshComponent> StoneInstancesPlayer4;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Gomoku|Board")
+	TObjectPtr<UInstancedStaticMeshComponent> BoardGridInstances;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Gomoku|Board")
+	TObjectPtr<UInstancedStaticMeshComponent> BlockedCellInstances;
+
 	UFUNCTION(BlueprintPure, Category = "Gomoku|Board")
 	bool WorldToGrid(const FVector& WorldLoc, int32& OutX, int32& OutY) const;
 
@@ -32,7 +57,7 @@ public:
 	FVector GridToWorld(int32 X, int32 Y) const;
 
 	UFUNCTION(BlueprintCallable, Category = "Gomoku|Stones")
-	int32 AddStoneAt(int32 X, int32 Y);
+	int32 AddStoneAt(int32 X, int32 Y, int32 PlayerId = 1);
 
 	UFUNCTION(BlueprintCallable, Category = "Gomoku|Stones")
 	void ClearStones();
@@ -45,6 +70,9 @@ public:
 
 	UFUNCTION(BlueprintCallable, Category = "Gomoku|Camera")
 	void FitCameraToBoard();
+
+	/** Converts a screen position to a board coordinate, including a Z-plane fallback when mesh collision is unavailable. */
+	bool ScreenToGrid(APlayerController* PlayerController, const FVector2D& ScreenPosition, FIntPoint& OutCell) const;
 
 protected:
 	virtual void BeginPlay() override;
@@ -75,10 +103,18 @@ protected:
 private:
 	FVector GetBoardOrigin() const;
 	float GetEffectiveCellSize() const;
+	FVector GetStoneVisualScale() const;
+	void RebuildBoardGrid();
+	void AddBlockedCell(int32 X, int32 Y);
 	void RefreshFromReplicatedBoard();
+	void ConfigureStoneComponent(UInstancedStaticMeshComponent* Component, const FLinearColor& Color);
+	UInstancedStaticMeshComponent* GetStoneComponentForPlayer(int32 PlayerId) const;
+	int32 GetPlayerIdAtCell(const FIntPoint& Cell) const;
 
-	UPROPERTY()
-	TArray<int32> AnimatingInstanceIndices;
+	TArray<FGomokuAnimatingStone> AnimatingStones;
+
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<UMaterialInstanceDynamic>> RuntimeMaterials;
 
 	float StoneAnimSpeed = 4.f;
 };

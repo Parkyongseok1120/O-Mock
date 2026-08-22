@@ -33,6 +33,9 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Gomoku|Lobby")
 	void RequestStartLobbyMatch(const FString& MapName = TEXT("/Game/NewWorld"));
 
+	UFUNCTION(BlueprintCallable, Category = "Gomoku|Match")
+	void RequestAbandonMatch();
+
 	UPROPERTY(BlueprintReadOnly, Category = "Gomoku|Items")
 	bool bItemTargetingActive = false;
 
@@ -42,6 +45,7 @@ public:
 protected:
 	virtual void BeginPlay() override;
 	virtual void SetupInputComponent() override;
+	virtual void PlayerTick(float DeltaTime) override;
 
 private:
 	UFUNCTION(Server, Reliable)
@@ -59,6 +63,15 @@ private:
 	UFUNCTION(Server, Reliable)
 	void Server_SubmitMiniGameAnswer(FIntPoint AnswerCell);
 
+	UFUNCTION(Server, Unreliable)
+	void Server_UpdateHoveredCell(FIntPoint Cell, bool bHasValidCell);
+
+	UFUNCTION(Server, Reliable)
+	void Server_RequestAbandonMatch();
+
+	UFUNCTION(Server, Reliable)
+	void Server_RequestRestartMatch();
+
 	UFUNCTION()
 	void HandlePrimaryClick();
 
@@ -74,10 +87,24 @@ private:
 	UFUNCTION()
 	void OnMouseMoveY(float Value);
 
+	void HandleSelectItem1();
+	void HandleSelectItem2();
+	void HandleSelectItem3();
+	void HandleSelectItem4();
+	void HandleSelectItem5();
+	void HandleReadyKey();
+	void HandleStartMatchKey();
+	void ResolveBoardActor();
+	int32 ResolveNetworkPlayerIndex() const;
+
 	UPROPERTY(VisibleAnywhere, Category = "Gomoku")
 	TObjectPtr<AGomokuBoardActor> BoardActor;
 
 	// Cached GameState reference for hover/time queries.
 	UPROPERTY(VisibleAnywhere, Category = "Gomoku")
 	TObjectPtr<AGomokuGameState> GomokuGSState;
+
+	FIntPoint LastReportedHoveredCell = FIntPoint(-1, -1);
+	bool bLastReportedHoverWasValid = false;
+	int32 LastReportedHoverPlayerIndex = INDEX_NONE;
 };

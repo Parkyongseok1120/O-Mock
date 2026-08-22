@@ -18,17 +18,11 @@ void AGomokuPlayerController::BeginPlay()
 {
 	Super::BeginPlay();
 
-	// Find board actor in world (spawned by GameMode); no per-cell Actor array used.
 	if (UWorld* World = GetWorld())
 	{
-		for (TActorIterator<AGomokuBoardActor> It(World); It; ++It)
-		{
-			BoardActor = *It;
-			break;
-		}
-
 		GomokuGSState = Cast<AGomokuGameState>(World->GetGameState());
 	}
+	ResolveBoardActor();
 }
 
 void AGomokuPlayerController::SetupInputComponent()
@@ -51,11 +45,36 @@ void AGomokuPlayerController::SetupInputComponent()
 		this,
 		&AGomokuPlayerController::HandleRestartKey);
 
-	// Mouse move via BindAxis for hover cell updates.
-	InputComponent->BindAxis("MouseX", this, &AGomokuPlayerController::OnMouseMoveX);
-	InputComponent->BindAxis("MouseY", this, &AGomokuPlayerController::OnMouseMoveY);
+	InputComponent->BindKey(EKeys::One, IE_Pressed, this, &AGomokuPlayerController::HandleSelectItem1);
+	InputComponent->BindKey(EKeys::Two, IE_Pressed, this, &AGomokuPlayerController::HandleSelectItem2);
+	InputComponent->BindKey(EKeys::Three, IE_Pressed, this, &AGomokuPlayerController::HandleSelectItem3);
+	InputComponent->BindKey(EKeys::Four, IE_Pressed, this, &AGomokuPlayerController::HandleSelectItem4);
+	InputComponent->BindKey(EKeys::Five, IE_Pressed, this, &AGomokuPlayerController::HandleSelectItem5);
+	InputComponent->BindKey(EKeys::Escape, IE_Pressed, this, &AGomokuPlayerController::CancelItemTargeting);
+	InputComponent->BindKey(EKeys::T, IE_Pressed, this, &AGomokuPlayerController::HandleReadyKey);
+	InputComponent->BindKey(EKeys::Enter, IE_Pressed, this, &AGomokuPlayerController::HandleStartMatchKey);
 
 	bShowMouseCursor = true;
+}
+
+void AGomokuPlayerController::PlayerTick(float DeltaTime)
+{
+	Super::PlayerTick(DeltaTime);
+	ResolveBoardActor();
+	if (!GomokuGSState && GetWorld())
+	{
+		GomokuGSState = GetWorld()->GetGameState<AGomokuGameState>();
+	}
+	if (!IsLocalController())
+	{
+		return;
+	}
+
+	FVector2D MousePosition;
+	if (GetMousePosition(MousePosition.X, MousePosition.Y))
+	{
+		HandleMouseMove(MousePosition);
+	}
 }
 
 void AGomokuPlayerController::HandlePrimaryClick()
@@ -65,54 +84,39 @@ void AGomokuPlayerController::HandlePrimaryClick()
 	AGomokuGameState* GS = GetWorld()->GetGameState<AGomokuGameState>();
 	if (!GS || !GS->IsGameActive) return;
 
+	ResolveBoardActor();
 	if (!BoardActor) return;
 
 	FVector2D MousePos;
 	if (!GetMousePosition(MousePos.X, MousePos.Y)) return;
 
-	UWorld* World = GetWorld();
-	FVector WorldOrigin, WorldDir;
-	if (!UGameplayStatics::DeprojectScreenToWorld(this, MousePos, WorldOrigin, WorldDir))
-		return;
-
-	FHitResult Hit;
-	FCollisionQueryParams Params(FName(TEXT("PlaceStoneTrace")), false, this);
-
-	if (World->LineTraceSingleByChannel(Hit, WorldOrigin, WorldOrigin + WorldDir.GetSafeNormal() * 10000.f, ECC_Visibility, Params))
+	FIntPoint Cell;
+	if (BoardActor->ScreenToGrid(this, MousePos, Cell))
 	{
-		int32 GridX = 0;
-		int32 GridY = 0;
-
-		if (BoardActor->WorldToGrid(Hit.ImpactPoint, GridX, GridY))
+		if (GS->MatchPhase == EMatchPhase::MiniGamePlaying)
 		{
-			FIntPoint Cell(GridX, GridY);
-
-			if (GS->MatchPhase == EMatchPhase::MiniGamePlaying)
+			if (GetNetMode() == NM_Standalone)
 			{
-				if (HasAuthority())
-				{
-					GS->SubmitMiniGameAnswer(GS->CurrentPlayerIndex, Cell);
-				}
-				else
-				{
-					Server_SubmitMiniGameAnswer(Cell);
-				}
-			}
-			else if (bItemTargetingActive && SelectedItemId > 0)
-			{
-				RequestUseSelectedItem(Cell);
+				GS->SubmitMiniGameAnswer(GS->CurrentPlayerIndex, Cell);
 			}
 			else
 			{
-				// Local hotseat / authority path: direct call without RPC.
-				if (HasAuthority())
-				{
-					GS->HandlePlaceStone(GS->CurrentPlayerIndex, Cell);
-				}
-				else
-				{
-					Server_RequestPlaceStone(Cell);
-				}
+				Server_SubmitMiniGameAnswer(Cell);
+			}
+		}
+		else if (bItemTargetingActive && SelectedItemId > 0)
+		{
+			RequestUseSelectedItem(Cell);
+		}
+		else
+		{
+			if (GetNetMode() == NM_Standalone)
+			{
+				GS->HandlePlaceStone(GS->CurrentPlayerIndex, Cell);
+			}
+			else
+			{
+				Server_RequestPlaceStone(Cell);
 			}
 		}
 	}
@@ -131,10 +135,10 @@ void AGomokuPlayerController::Server_RequestPlaceStone_Implementation(FIntPoint 
 	if (!GS)
 		return;
 
-	int32 RequestingPlayerIndex = GS->CurrentPlayerIndex;
-	if (const AGomokuPlayerState* GomokuState = GetPlayerState<AGomokuPlayerState>())
+	const int32 RequestingPlayerIndex = ResolveNetworkPlayerIndex();
+	if (RequestingPlayerIndex == INDEX_NONE)
 	{
-		RequestingPlayerIndex = GomokuState->GomokuPlayerId - 1;
+		return;
 	}
 	GS->HandlePlaceStone(RequestingPlayerIndex, Cell);
 }
@@ -152,10 +156,10 @@ void AGomokuPlayerController::Server_RequestUseItem_Implementation(int32 ItemId,
 		return;
 	}
 
-	int32 RequestingPlayerIndex = GS->CurrentPlayerIndex;
-	if (const AGomokuPlayerState* GomokuState = GetPlayerState<AGomokuPlayerState>())
+	const int32 RequestingPlayerIndex = ResolveNetworkPlayerIndex();
+	if (RequestingPlayerIndex == INDEX_NONE)
 	{
-		RequestingPlayerIndex = GomokuState->GomokuPlayerId - 1;
+		return;
 	}
 	GS->HandleUseItem(RequestingPlayerIndex, ItemId, TargetCell, TargetPlayerIndex);
 }
@@ -199,12 +203,65 @@ void AGomokuPlayerController::Server_SubmitMiniGameAnswer_Implementation(FIntPoi
 		return;
 	}
 
-	int32 RequestingPlayerIndex = GS->CurrentPlayerIndex;
-	if (const AGomokuPlayerState* GomokuState = GetPlayerState<AGomokuPlayerState>())
+	const int32 RequestingPlayerIndex = ResolveNetworkPlayerIndex();
+	if (RequestingPlayerIndex == INDEX_NONE)
 	{
-		RequestingPlayerIndex = GomokuState->GomokuPlayerId - 1;
+		return;
 	}
 	GS->SubmitMiniGameAnswer(RequestingPlayerIndex, AnswerCell);
+}
+
+void AGomokuPlayerController::Server_UpdateHoveredCell_Implementation(FIntPoint Cell, bool bHasValidCell)
+{
+	if (!HasAuthority() || !GetWorld())
+	{
+		return;
+	}
+	AGomokuGameState* GS = GetWorld()->GetGameState<AGomokuGameState>();
+	if (!GS || ResolveNetworkPlayerIndex() != GS->CurrentPlayerIndex)
+	{
+		return;
+	}
+	if (bHasValidCell)
+	{
+		GS->SetHoveredCell(Cell);
+	}
+	else
+	{
+		GS->ClearHoveredCell();
+	}
+}
+
+void AGomokuPlayerController::Server_RequestAbandonMatch_Implementation()
+{
+	if (!HasAuthority() || !GetWorld())
+	{
+		return;
+	}
+	const int32 PlayerIndex = ResolveNetworkPlayerIndex();
+	if (PlayerIndex == INDEX_NONE)
+	{
+		return;
+	}
+	if (AGomokuGameState* GS = GetWorld()->GetGameState<AGomokuGameState>())
+	{
+		GS->RequestAbandonPlayer(PlayerIndex + 1);
+	}
+}
+
+void AGomokuPlayerController::Server_RequestRestartMatch_Implementation()
+{
+	if (!HasAuthority() || !GetWorld())
+	{
+		return;
+	}
+	AGomokuGameMode* GM = GetWorld()->GetAuthGameMode<AGomokuGameMode>();
+	AGomokuGameState* GS = GetWorld()->GetGameState<AGomokuGameState>();
+	if (!GM || !GS || GS->PlayerArray.IsEmpty() || PlayerState != GS->PlayerArray[0])
+	{
+		return;
+	}
+	GM->RestartGame();
 }
 
 void AGomokuPlayerController::HandleRestartKey()
@@ -212,10 +269,16 @@ void AGomokuPlayerController::HandleRestartKey()
 	if (!GetWorld())
 		return;
 
-	AGomokuGameMode* GM = Cast<AGomokuGameMode>(GetWorld()->GetAuthGameMode());
-	if (GM)
+	if (GetNetMode() == NM_Standalone)
 	{
-		GM->RestartGame();
+		if (AGomokuGameMode* GM = GetWorld()->GetAuthGameMode<AGomokuGameMode>())
+		{
+			GM->RestartGame();
+		}
+	}
+	else
+	{
+		Server_RequestRestartMatch();
 	}
 }
 
@@ -234,31 +297,36 @@ void AGomokuPlayerController::OnMouseMoveY(float Value)
 
 void AGomokuPlayerController::HandleMouseMove(FVector2D MousePos)
 {
+	ResolveBoardActor();
 	if (!GetWorld() || !BoardActor || !GomokuGSState)
 		return;
 
-	FVector WorldOrigin;
-	FVector WorldDir;
-	if (!UGameplayStatics::DeprojectScreenToWorld(this, MousePos, WorldOrigin, WorldDir))
-		return;
-
-	const FVector End = WorldOrigin + WorldDir * 10000.f;
-	FHitResult Hit;
-	FCollisionQueryParams QP(SCENE_QUERY_STAT(HoverTrace), false, this);
-	if (!GetWorld()->LineTraceSingleByChannel(Hit, WorldOrigin, End, ECC_Visibility, QP))
+	FIntPoint Cell;
+	const bool bValid = BoardActor->ScreenToGrid(this, MousePos, Cell);
+	const int32 HoverPlayerIndex = GomokuGSState->CurrentPlayerIndex;
+	if (bValid == bLastReportedHoverWasValid
+		&& (!bValid || Cell == LastReportedHoveredCell)
+		&& HoverPlayerIndex == LastReportedHoverPlayerIndex)
 	{
 		return;
 	}
-
-	int32 GridX = 0;
-	int32 GridY = 0;
-	if (BoardActor->WorldToGrid(Hit.Location, GridX, GridY))
+	bLastReportedHoverWasValid = bValid;
+	LastReportedHoveredCell = bValid ? Cell : FIntPoint(-1, -1);
+	LastReportedHoverPlayerIndex = HoverPlayerIndex;
+	if (GetNetMode() == NM_Standalone)
 	{
-		GomokuGSState->SetHoveredCell(FIntPoint(GridX, GridY));
+		if (bValid)
+		{
+			GomokuGSState->SetHoveredCell(Cell);
+		}
+		else
+		{
+			GomokuGSState->ClearHoveredCell();
+		}
 	}
 	else
 	{
-		GomokuGSState->ClearHoveredCell();
+		Server_UpdateHoveredCell(Cell, bValid);
 	}
 }
 
@@ -281,14 +349,68 @@ void AGomokuPlayerController::RequestUseSelectedItem(const FIntPoint& TargetCell
 		return;
 	}
 
-	if (HasAuthority())
+	if (GetNetMode() == NM_Standalone)
 	{
-		Server_RequestUseItem_Implementation(SelectedItemId, TargetCell, TargetPlayerIndex);
+		if (AGomokuGameState* GS = GetWorld() ? GetWorld()->GetGameState<AGomokuGameState>() : nullptr)
+		{
+			GS->HandleUseItem(GS->CurrentPlayerIndex, SelectedItemId, TargetCell, TargetPlayerIndex);
+		}
 	}
 	else
 	{
 		Server_RequestUseItem(SelectedItemId, TargetCell, TargetPlayerIndex);
 	}
+	CancelItemTargeting();
+}
+
+void AGomokuPlayerController::RequestAbandonMatch()
+{
+	if (!GetWorld())
+	{
+		return;
+	}
+	if (GetNetMode() == NM_Standalone)
+	{
+		if (AGomokuGameState* GS = GetWorld()->GetGameState<AGomokuGameState>())
+		{
+			GS->RequestAbandonCurrentPlayer();
+		}
+	}
+	else
+	{
+		Server_RequestAbandonMatch();
+	}
+}
+
+void AGomokuPlayerController::HandleSelectItem1() { SelectItem(1); }
+void AGomokuPlayerController::HandleSelectItem2() { SelectItem(2); }
+void AGomokuPlayerController::HandleSelectItem3() { SelectItem(3); }
+void AGomokuPlayerController::HandleSelectItem4() { SelectItem(4); }
+void AGomokuPlayerController::HandleSelectItem5() { SelectItem(5); }
+void AGomokuPlayerController::HandleReadyKey() { SetReadyForLobby(true); }
+void AGomokuPlayerController::HandleStartMatchKey() { RequestStartLobbyMatch(TEXT("")); }
+
+void AGomokuPlayerController::ResolveBoardActor()
+{
+	if (IsValid(BoardActor) || !GetWorld())
+	{
+		return;
+	}
+	for (TActorIterator<AGomokuBoardActor> It(GetWorld()); It; ++It)
+	{
+		BoardActor = *It;
+		break;
+	}
+}
+
+int32 AGomokuPlayerController::ResolveNetworkPlayerIndex() const
+{
+	const AGomokuPlayerState* GomokuState = GetPlayerState<AGomokuPlayerState>();
+	if (!GomokuState || GomokuState->GomokuPlayerId <= 0)
+	{
+		return INDEX_NONE;
+	}
+	return GomokuState->GomokuPlayerId - 1;
 }
 
 void AGomokuPlayerController::SetReadyForLobby(bool bReady)

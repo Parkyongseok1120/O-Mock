@@ -105,7 +105,7 @@ struct FGomokuMatchConfig
 	float TurnTimeLimit = 30.f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gomoku")
-	int32 InitialEnergyPerPlayer = 10;
+	int32 InitialEnergyPerPlayer = 5;
 
 	/** Cells that are permanently blocked (no stone placement). */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gomoku|Template")

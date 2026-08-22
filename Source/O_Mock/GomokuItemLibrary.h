@@ -36,11 +36,16 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Gomoku|Items")
 	static bool ValidateTarget(UGomokuRuleEngine* Engine, int32 ItemId, const FIntPoint& TargetCell, int32 TargetPlayerIndex);
 
+	/** Player-aware target validation used by the authoritative execution path. */
+	static bool ValidateTargetForPlayer(UGomokuRuleEngine* Engine, int32 PlayerId, int32 ItemId,
+		const FIntPoint& TargetCell, int32 TargetPlayerIndex);
+
 	/**
 	 * Execute a validated item effect.
 	 * Validates ownership, removes item from inventory via RuleEngine.
 	 * Returns false if unknown or not yet implemented.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Gomoku|Items")
-	static bool ExecuteItem(UGomokuRuleEngine* Engine, int32 ItemId, int32 PlayerId, const FIntPoint& TargetCell, int32 TargetPlayerIndex);
+	static bool ExecuteItem(UGomokuRuleEngine* Engine, int32 ItemId, int32 PlayerId,
+		const FIntPoint& TargetCell, int32 TargetPlayerIndex, int32 CurrentRoundIndex = 1);
 };

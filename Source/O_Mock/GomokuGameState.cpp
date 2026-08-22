@@ -36,7 +36,9 @@ void AGomokuGameState::InitializeForLocalHotseat(int32 MaxPlayers)
 	WinnerPlayerIndex = INDEX_NONE;
 	bMiniGameActive = false;
 	MiniGameRemainingTime = 0.0f;
-	MiniGameTargetCell = FIntPoint(-1, -1);
+	MiniGameResultRemainingTime = 0.0f;
+	MiniGameAnswerCell = FIntPoint(-1, -1);
+	MiniGamePuzzleCells.Reset();
 	MiniGameSubmittedPlayerIndices.Reset();
 	MiniGameCorrectPlayerIndices.Reset();
 	CurrentPlayerIndex = -1;
@@ -61,13 +63,6 @@ void AGomokuGameState::InitializeForLocalHotseat(int32 MaxPlayers)
 	if (EventLog)
 	{
 		EventLog->Clear();
-	}
-
-	if (RuleEngine.IsValid())
-	{
-		FGomokuMatchConfig Cfg = RuleEngine->GetMatchConfig();
-		Cfg.MaxPlayers = LocalPlayerCount;
-		RuleEngine->InitializeMatch(Cfg);
 	}
 
 	SyncReplicatedBoard();
@@ -98,7 +93,6 @@ void AGomokuGameState::StartNewTurn()
 		CurrentPlayerIndex = RuleEngine->GetCurrentPlayerIndex();
 	}
 
-	TurnStartTime = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.f;
 	if (CurrentPlayerIndex >= 0 && CurrentPlayerIndex < PlayerTimes.Num())
 	{
 		PlayerTimes[CurrentPlayerIndex].TurnElapsedThisTurn = 0.f;
@@ -121,9 +115,16 @@ void AGomokuGameState::StartNewTurn()
 		const auto& PState = RuleEngine->GetPlayerStateData(NewPlayerId);
 		if (PState.ItemIds.Num() < 2)
 		{
-			const int32 NewItemId = FMath::RandRange(1, 5);
-			RuleEngine->AddItemToInventory(NewPlayerId, NewItemId);
-			RuleEngine->MarkItemGainedThisTurn(NewPlayerId, NewItemId);
+			const int32 FirstCandidate = FMath::RandRange(1, 5);
+			for (int32 Offset = 0; Offset < 5; ++Offset)
+			{
+				const int32 NewItemId = ((FirstCandidate - 1 + Offset) % 5) + 1;
+				if (RuleEngine->AddItemToInventory(NewPlayerId, NewItemId))
+				{
+					RuleEngine->MarkItemGainedThisTurn(NewPlayerId, NewItemId);
+					break;
+				}
+			}
 		}
 
 		RuleEngine->AddPlayerEnergy(NewPlayerId, 1, UGomokuItemLibrary::MaxEnergy);
@@ -146,14 +147,10 @@ void AGomokuGameState::EndCurrentTurn(bool bForceEnd, bool bSkipCompletionTracki
 		return;
 	}
 
-	const float Now = GetWorld() ? GetWorld()->GetTimeSeconds() : TurnStartTime;
-	const float TurnDuration = Now - TurnStartTime;
 	if (bHasTimeSystem && CurrentPlayerIndex >= 0 && CurrentPlayerIndex < PlayerTimes.Num())
 	{
 		FGomokuPlayerTimeState& TS = PlayerTimes[CurrentPlayerIndex];
-		const float EffectiveDuration = FMath::Min(TurnDuration, MaxTurnTime);
 		TS.TurnElapsedThisTurn = 0.0f;
-		TS.PersonalRemaining = FMath::Max(0.0f, TS.PersonalRemaining - EffectiveDuration);
 	}
 
 	if (!bSkipCompletionTracking)
@@ -163,6 +160,28 @@ void AGomokuGameState::EndCurrentTurn(bool bForceEnd, bool bSkipCompletionTracki
 	RoundTurnCount++;
 
 	const TArray<int32>& ActiveIndices = RuleEngine->GetActivePlayerIndices();
+	int32 SkippedPlayerForNextRound = INDEX_NONE;
+	if (!bSkipCompletionTracking && ActiveIndices.Num() > 1)
+	{
+		const int32 CurrentActivePosition = ActiveIndices.IndexOfByKey(CurrentPlayerIndex);
+		if (CurrentActivePosition != INDEX_NONE)
+		{
+			const int32 Direction = RuleEngine->TurnDirection >= 0 ? 1 : -1;
+			const int32 NextActivePosition = (CurrentActivePosition + Direction + ActiveIndices.Num()) % ActiveIndices.Num();
+			const int32 NextPlayerIndex = ActiveIndices[NextActivePosition];
+			if (RuleEngine->GetPlayerStateData(NextPlayerIndex + 1).bSkipNextTurn)
+			{
+				if (PlayersCompletedThisRound.Contains(NextPlayerIndex))
+				{
+					SkippedPlayerForNextRound = NextPlayerIndex;
+				}
+				else
+				{
+					PlayersCompletedThisRound.Add(NextPlayerIndex);
+				}
+			}
+		}
+	}
 	bool bRoundCompleted = !bSkipCompletionTracking && !ActiveIndices.IsEmpty() &&
 		[&]()
 		{
@@ -176,6 +195,7 @@ void AGomokuGameState::EndCurrentTurn(bool bForceEnd, bool bSkipCompletionTracki
 
 	if (bRoundCompleted)
 	{
+		RuleEngine->ExpireRoundEffects(CurrentRoundIndex);
 		if (bHasTimeSystem)
 		{
 			ApplyEndOfRoundRecovery();
@@ -186,6 +206,10 @@ void AGomokuGameState::EndCurrentTurn(bool bForceEnd, bool bSkipCompletionTracki
 			OnMatchEvent.Broadcast(EventLog->GetLastEvent());
 		}
 		PlayersCompletedThisRound.Reset();
+		if (SkippedPlayerForNextRound != INDEX_NONE)
+		{
+			PlayersCompletedThisRound.Add(SkippedPlayerForNextRound);
+		}
 		RoundTurnCount = 0;
 		CurrentRoundIndex++;
 
@@ -272,8 +296,18 @@ void AGomokuGameState::HandleUseItem(int32 PlayerIndex, int32 ItemId, const FInt
 	}
 
 	const int32 PlayerId = PlayerIndex + 1;
+	if (ItemId == 4 && TargetPlayerIndex < 0)
+	{
+		const TArray<int32>& ActiveIndices = RuleEngine->GetActivePlayerIndices();
+		const int32 CurrentActivePosition = ActiveIndices.IndexOfByKey(PlayerIndex);
+		if (CurrentActivePosition != INDEX_NONE && ActiveIndices.Num() > 1)
+		{
+			const int32 Direction = RuleEngine->TurnDirection >= 0 ? 1 : -1;
+			TargetPlayerIndex = (CurrentActivePosition + Direction + ActiveIndices.Num()) % ActiveIndices.Num();
+		}
+	}
 	if (!UGomokuItemLibrary::CanUseItem(RuleEngine.Get(), PlayerId, ItemId) ||
-		!UGomokuItemLibrary::ValidateTarget(RuleEngine.Get(), ItemId, TargetCell, TargetPlayerIndex))
+		!UGomokuItemLibrary::ValidateTargetForPlayer(RuleEngine.Get(), PlayerId, ItemId, TargetCell, TargetPlayerIndex))
 	{
 		return;
 	}
@@ -287,7 +321,7 @@ void AGomokuGameState::HandleUseItem(int32 PlayerIndex, int32 ItemId, const FInt
 
 	// Reset the cached result so an item without win recheck cannot observe stale data.
 	RuleEngine->SetLastItemWinResult(FGomokuWinResult());
-	if (!UGomokuItemLibrary::ExecuteItem(RuleEngine.Get(), ItemId, PlayerId, TargetCell, TargetPlayerIndex))
+	if (!UGomokuItemLibrary::ExecuteItem(RuleEngine.Get(), ItemId, PlayerId, TargetCell, TargetPlayerIndex, CurrentRoundIndex))
 	{
 		return;
 	}
@@ -339,8 +373,11 @@ void AGomokuGameState::TickTimeSystem(float DeltaSeconds)
 	}
 
 	FGomokuPlayerTimeState& TS = PlayerTimes[CurrentPlayerIndex];
-	const float ElapsedSinceTurnStart = (GetWorld() ? GetWorld()->GetTimeSeconds() : TurnStartTime) - TurnStartTime;
-	TS.TurnElapsedThisTurn = ElapsedSinceTurnStart;
+	const float RequestedStep = FMath::Max(0.0f, DeltaSeconds);
+	const float TurnCapacity = FMath::Max(0.0f, MaxTurnTime - TS.TurnElapsedThisTurn);
+	const float AppliedStep = FMath::Min3(RequestedStep, TurnCapacity, TS.PersonalRemaining);
+	TS.TurnElapsedThisTurn += AppliedStep;
+	TS.PersonalRemaining = FMath::Max(0.0f, TS.PersonalRemaining - AppliedStep);
 
 	if (TS.PersonalRemaining <= 0.0f || TS.TurnElapsedThisTurn >= MaxTurnTime)
 	{
@@ -433,6 +470,11 @@ void AGomokuGameState::RestartMatch()
 	MatchPhase = EMatchPhase::Playing;
 	HoveredCell = FIntPoint(-1, -1);
 	CurrentPlayerIndex = -1;
+	bMiniGameActive = false;
+	MiniGameRemainingTime = 0.0f;
+	MiniGameResultRemainingTime = 0.0f;
+	MiniGameAnswerCell = FIntPoint(-1, -1);
+	MiniGamePuzzleCells.Reset();
 
 	PlayerTimes.Reset();
 	for (int32 i = 0; i < LocalPlayerCount; ++i)
@@ -455,11 +497,17 @@ void AGomokuGameState::RestartMatch()
 
 void AGomokuGameState::RequestAbandonCurrentPlayer()
 {
-	if (!HasAuthority()) return;
-	if (!IsGameActive || !RuleEngine.IsValid())
-		return;
+	RequestAbandonPlayer(CurrentPlayerIndex + 1);
+}
 
-	const int32 PlayerId = CurrentPlayerIndex + 1; // RuleEngine uses 1-based IDs.
+void AGomokuGameState::RequestAbandonPlayer(int32 PlayerId)
+{
+	if (!HasAuthority() || !IsGameActive || !RuleEngine.IsValid() || !RuleEngine->IsPlayerActive(PlayerId))
+	{
+		return;
+	}
+
+	const int32 AbandoningPlayerIndex = PlayerId - 1;
 	const int32 Remaining = RuleEngine->AbandonPlayer(PlayerId);
 
 	if (EventLog)
@@ -500,8 +548,12 @@ void AGomokuGameState::RequestAbandonCurrentPlayer()
 			PlayersCompletedThisRound.Remove(Idx);
 	}
 
-	// Advance turn to next active player without treating abandon as a completed action.
-	EndCurrentTurn(true, true); // bSkipCompletionTracking = true: do not add abandoned player to round completion set.
+	SyncPlayerStates();
+	if (AbandoningPlayerIndex == CurrentPlayerIndex)
+	{
+		// Advance turn without treating abandon as a completed action.
+		EndCurrentTurn(true, true);
+	}
 }
 
 void AGomokuGameState::StartMiniGame()
@@ -511,10 +563,19 @@ void AGomokuGameState::StartMiniGame()
 		return;
 	}
 
-	const FGomokuMatchConfig& Config = RuleEngine->GetMatchConfig();
 	bMiniGameActive = true;
 	MiniGameRemainingTime = 8.0f;
-	MiniGameTargetCell = FIntPoint(Config.BoardSizeX / 2, Config.BoardSizeY / 2);
+	MiniGameResultRemainingTime = 0.0f;
+	MiniGameAnswerCell = FIntPoint(5, 3);
+	MiniGamePuzzleCells.Init(ECellState::Empty, 49);
+	MiniGamePuzzleCells[3 * 7] = ECellState::Blocked;
+	for (int32 X = 1; X <= 4; ++X)
+	{
+		MiniGamePuzzleCells[3 * 7 + X] = ECellState::Player1;
+	}
+	MiniGamePuzzleCells[1 * 7 + 2] = ECellState::Player2;
+	MiniGamePuzzleCells[2 * 7 + 2] = ECellState::Player2;
+	MiniGamePuzzleCells[4 * 7 + 4] = ECellState::Player3;
 	MiniGameSubmittedPlayerIndices.Reset();
 	MiniGameCorrectPlayerIndices.Reset();
 	MatchPhase = EMatchPhase::MiniGamePlaying;
@@ -522,9 +583,10 @@ void AGomokuGameState::StartMiniGame()
 
 	if (EventLog)
 	{
-		EventLog->AppendEvent(EMatchEventType::MiniGameStarted, 0, INDEX_NONE, MiniGameTargetCell, NAME_None);
+		EventLog->AppendEvent(EMatchEventType::MiniGameStarted, 0, CurrentRoundIndex, FIntPoint(-1, -1), NAME_None);
 		OnMatchEvent.Broadcast(EventLog->GetLastEvent());
 	}
+	OnReplicatedBoardChanged.Broadcast();
 }
 
 bool AGomokuGameState::SubmitMiniGameAnswer(int32 PlayerIndex, const FIntPoint& AnswerCell)
@@ -537,10 +599,12 @@ bool AGomokuGameState::SubmitMiniGameAnswer(int32 PlayerIndex, const FIntPoint& 
 	}
 
 	MiniGameSubmittedPlayerIndices.Add(PlayerIndex);
-	if (AnswerCell == MiniGameTargetCell)
+	if (AnswerCell == MiniGameAnswerCell)
 	{
+		const int32 CorrectRank = MiniGameCorrectPlayerIndices.Num();
 		MiniGameCorrectPlayerIndices.Add(PlayerIndex);
-		RuleEngine->AddPlayerEnergy(PlayerIndex + 1, 1, UGomokuItemLibrary::MaxEnergy);
+		const int32 Reward = FMath::Max(1, 3 - CorrectRank);
+		RuleEngine->AddPlayerEnergy(PlayerIndex + 1, Reward, UGomokuItemLibrary::MaxEnergy);
 	}
 	SyncPlayerStates();
 
@@ -549,6 +613,7 @@ bool AGomokuGameState::SubmitMiniGameAnswer(int32 PlayerIndex, const FIntPoint& 
 		bMiniGameActive = false;
 		MatchPhase = EMatchPhase::MiniGameResult;
 		MiniGameRemainingTime = 0.0f;
+		MiniGameResultRemainingTime = 3.0f;
 		if (EventLog)
 		{
 			EventLog->AppendEvent(EMatchEventType::MiniGameResult, PlayerIndex + 1, INDEX_NONE, AnswerCell, NAME_None);
@@ -568,9 +633,12 @@ void AGomokuGameState::ResumeFromMiniGame()
 
 	bMiniGameActive = false;
 	MiniGameRemainingTime = 0.0f;
-	MiniGameTargetCell = FIntPoint(-1, -1);
+	MiniGameAnswerCell = FIntPoint(-1, -1);
+	MiniGamePuzzleCells.Reset();
+	MiniGameResultRemainingTime = 0.0f;
 	MatchPhase = EMatchPhase::Playing;
 	bTimePaused = false;
+	SyncReplicatedBoard();
 	StartNewTurn();
 }
 
@@ -627,6 +695,7 @@ void AGomokuGameState::SyncReplicatedBoard()
 			ReplicatedBoardCells.Add(RuleEngine->GetCellState(X, Y));
 		}
 	}
+	OnReplicatedBoardChanged.Broadcast();
 }
 
 void AGomokuGameState::SyncPlayerStates()
@@ -710,7 +779,11 @@ void AGomokuGameState::Tick(float DeltaTime)
 	}
 	if (MatchPhase == EMatchPhase::MiniGameResult)
 	{
-		ResumeFromMiniGame();
+		MiniGameResultRemainingTime = FMath::Max(0.0f, MiniGameResultRemainingTime - FMath::Max(0.0f, DeltaTime));
+		if (MiniGameResultRemainingTime <= 0.0f)
+		{
+			ResumeFromMiniGame();
+		}
 		return;
 	}
 	TickTimeSystem(DeltaTime);
@@ -728,6 +801,7 @@ void AGomokuGameState::TickMiniGame(float DeltaSeconds)
 	{
 		bMiniGameActive = false;
 		MatchPhase = EMatchPhase::MiniGameResult;
+		MiniGameResultRemainingTime = 3.0f;
 		if (EventLog)
 		{
 			EventLog->AppendEvent(EMatchEventType::MiniGameResult, 0, INDEX_NONE, FIntPoint(-1, -1), NAME_None);
@@ -754,7 +828,8 @@ void AGomokuGameState::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& Out
 	DOREPLIFETIME(AGomokuGameState, MatchPhase);
 	DOREPLIFETIME(AGomokuGameState, bMiniGameActive);
 	DOREPLIFETIME(AGomokuGameState, MiniGameRemainingTime);
-	DOREPLIFETIME(AGomokuGameState, MiniGameTargetCell);
+	DOREPLIFETIME(AGomokuGameState, MiniGamePuzzleCells);
+	DOREPLIFETIME(AGomokuGameState, MiniGameResultRemainingTime);
 	DOREPLIFETIME(AGomokuGameState, MiniGameSubmittedPlayerIndices);
 	DOREPLIFETIME(AGomokuGameState, MiniGameCorrectPlayerIndices);
 	DOREPLIFETIME(AGomokuGameState, ReplicatedBoardSizeX);
@@ -837,5 +912,10 @@ void AGomokuGameState::OnRep_ReplicatedBoardCells(const TArray<ECellState>& Prev
 		OnMatchRestarted.Broadcast();
 	}
 
+	OnReplicatedBoardChanged.Broadcast();
+}
+
+void AGomokuGameState::OnRep_MatchPresentation()
+{
 	OnReplicatedBoardChanged.Broadcast();
 }

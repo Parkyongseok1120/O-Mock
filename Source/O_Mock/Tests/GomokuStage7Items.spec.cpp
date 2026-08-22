@@ -184,8 +184,8 @@ bool FGomokuStage7_PullMovesAdjacentStone::RunTest(const FString& Parameters)
 	const int32 PlayerId = 1;
 	const int32 PullItemId = 2;
 
-	// Place opponent stone at (6,5) to be pulled.
-	Engine->ForcePlaceStone(2, 6, 5);
+	// Pull moves only the using player's own adjacent stone.
+	Engine->ForcePlaceStone(1, 6, 5);
 
 	bool Added = Engine->AddItemToInventory(PlayerId, PullItemId);
 	if (!TestTrue(TEXT("Pull item added"), Added))
@@ -208,9 +208,9 @@ bool FGomokuStage7_PullMovesAdjacentStone::RunTest(const FString& Parameters)
 	}
 
 	const auto DstCell = Engine->GetBoardCell(5, 5);
-	if (UGomokuRuleEngine::CellStateToPlayerId(DstCell.State) != 2)
+	if (UGomokuRuleEngine::CellStateToPlayerId(DstCell.State) != 1)
 	{
-		AddError(TEXT("Pulled stone should belong to player 2 at destination"));
+		AddError(TEXT("Pulled stone should remain owned by player 1 at destination"));
 		return false;
 	}
 
@@ -423,6 +423,116 @@ bool FGomokuStage7_SecondItemUseRejectedSameTurn::RunTest(const FString& Paramet
 		return false;
 
 	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FGomokuStage7_PullRejectsOpponentWithoutMutation,
+	TEXT("Gomoku.Stage7.PullRejectsOpponentWithoutMutation"),
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FGomokuStage7_PullRejectsOpponentWithoutMutation::RunTest(const FString& Parameters)
+{
+	UGomokuRuleEngine* Engine = MakeStage7Engine(2, 15);
+	Engine->ForcePlaceStone(2, 6, 5);
+	Engine->AddItemToInventory(1, 2);
+	const int32 EnergyBefore = Engine->GetPlayerStateData(1).Energy;
+
+	const bool bExecuted = UGomokuItemLibrary::ExecuteItem(Engine, 2, 1, FIntPoint(5, 5), -1);
+	return
+		TestFalse(TEXT("Pull cannot move an opponent stone"), bExecuted) &&
+		TestEqual(TEXT("Opponent source stone remains in place"), Engine->GetCellState(6, 5), ECellState::Player2) &&
+		TestEqual(TEXT("Failed pull leaves destination empty"), Engine->GetCellState(5, 5), ECellState::Empty) &&
+		TestEqual(TEXT("Failed pull leaves energy unchanged"), Engine->GetPlayerStateData(1).Energy, EnergyBefore) &&
+		TestTrue(TEXT("Failed pull leaves item in inventory"), Engine->PlayerHasItem(1, 2));
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FGomokuStage7_EnforcesCostsAndSpecificTargets,
+	TEXT("Gomoku.Stage7.EnforcesCostsAndSpecificTargets"),
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FGomokuStage7_EnforcesCostsAndSpecificTargets::RunTest(const FString& Parameters)
+{
+	UGomokuRuleEngine* SkipEngine = MakeStage7Engine(3, 15);
+	SkipEngine->AddItemToInventory(1, 4);
+	const int32 SkipEnergyBefore = SkipEngine->GetPlayerStateData(1).Energy;
+	const bool bWrongSkipRejected = !UGomokuItemLibrary::ExecuteItem(
+		SkipEngine, 4, 1, FIntPoint(-1, -1), 2);
+	const bool bNextSkipAccepted = UGomokuItemLibrary::ExecuteItem(
+		SkipEngine, 4, 1, FIntPoint(-1, -1), 1);
+	const bool bSkipValid =
+		TestTrue(TEXT("Skip rejects a player other than the next player"), bWrongSkipRejected) &&
+		TestTrue(TEXT("Skip accepts the next active player"), bNextSkipAccepted) &&
+		TestEqual(TEXT("Skip costs three energy"), SkipEnergyBefore - SkipEngine->GetPlayerStateData(1).Energy, 3) &&
+		TestTrue(TEXT("Skip marks player two"), SkipEngine->GetPlayerStateData(2).bSkipNextTurn);
+
+	UGomokuRuleEngine* GuardEngine = MakeStage7Engine(2, 15);
+	GuardEngine->ForcePlaceStone(1, 5, 5);
+	GuardEngine->ForcePlaceStone(2, 4, 4);
+	GuardEngine->AddItemToInventory(1, 5);
+	const int32 GuardEnergyBefore = GuardEngine->GetPlayerStateData(1).Energy;
+	const bool bOpponentGuardRejected = !UGomokuItemLibrary::ExecuteItem(
+		GuardEngine, 5, 1, FIntPoint(4, 4), -1);
+	const bool bOwnGuardAccepted = UGomokuItemLibrary::ExecuteItem(
+		GuardEngine, 5, 1, FIntPoint(5, 5), -1);
+	const bool bGuardValid =
+		TestTrue(TEXT("Guardian rejects an opponent stone"), bOpponentGuardRejected) &&
+		TestTrue(TEXT("Guardian accepts the user's own stone"), bOwnGuardAccepted) &&
+		TestEqual(TEXT("Guardian costs two energy"), GuardEnergyBefore - GuardEngine->GetPlayerStateData(1).Energy, 2) &&
+		TestTrue(TEXT("Own stone is guardian protected"), GuardEngine->IsCellGuardianProtected(5, 5));
+
+	UGomokuRuleEngine* StealEngine = MakeStage7Engine(2, 15);
+	StealEngine->ForcePlaceStone(2, 4, 4);
+	StealEngine->ForcePlaceStone(2, 4, 5);
+	StealEngine->AddItemToInventory(1, 3);
+	const int32 StealEnergyBefore = StealEngine->GetPlayerStateData(1).Energy;
+	const bool bConnectedStealRejected = !UGomokuItemLibrary::ExecuteItem(
+		StealEngine, 3, 1, FIntPoint(4, 4), -1);
+	StealEngine->RemoveStoneAt(4, 5);
+	const bool bIsolatedStealAccepted = UGomokuItemLibrary::ExecuteItem(
+		StealEngine, 3, 1, FIntPoint(4, 4), -1);
+	const bool bStealValid =
+		TestTrue(TEXT("Steal rejects a stone connected to its owner's stone"), bConnectedStealRejected) &&
+		TestTrue(TEXT("Steal accepts an isolated opponent stone"), bIsolatedStealAccepted) &&
+		TestEqual(TEXT("Steal costs three energy"), StealEnergyBefore - StealEngine->GetPlayerStateData(1).Energy, 3) &&
+		TestEqual(TEXT("Stolen stone changes ownership"), StealEngine->GetCellState(4, 4), ECellState::Player1);
+
+	return bSkipValid && bGuardValid && bStealValid;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FGomokuStage7_TemporaryEffectsExpireByRound,
+	TEXT("Gomoku.Stage7.TemporaryEffectsExpireByRound"),
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FGomokuStage7_TemporaryEffectsExpireByRound::RunTest(const FString& Parameters)
+{
+	UGomokuRuleEngine* SealEngine = MakeStage7Engine(2, 15);
+	SealEngine->AddItemToInventory(1, 1);
+	const bool bSealExecuted = UGomokuItemLibrary::ExecuteItem(
+		SealEngine, 1, 1, FIntPoint(3, 3), -1, 1);
+	SealEngine->ExpireRoundEffects(1);
+	const bool bSealSurvivesOne = SealEngine->GetCellState(3, 3) == ECellState::Blocked;
+	SealEngine->ExpireRoundEffects(2);
+	const bool bSealExpired = SealEngine->GetCellState(3, 3) == ECellState::Empty;
+
+	UGomokuRuleEngine* GuardEngine = MakeStage7Engine(2, 15);
+	GuardEngine->ForcePlaceStone(1, 6, 6);
+	GuardEngine->AddItemToInventory(1, 5);
+	const bool bGuardExecuted = UGomokuItemLibrary::ExecuteItem(
+		GuardEngine, 5, 1, FIntPoint(6, 6), -1, 1);
+	GuardEngine->ExpireRoundEffects(2);
+	const bool bGuardSurvivesTwo = GuardEngine->IsCellGuardianProtected(6, 6);
+	GuardEngine->ExpireRoundEffects(3);
+	const bool bGuardExpired = !GuardEngine->IsCellGuardianProtected(6, 6);
+
+	return
+		TestTrue(TEXT("Seal executes"), bSealExecuted) &&
+		TestTrue(TEXT("Seal survives until one full round has elapsed"), bSealSurvivesOne) &&
+		TestTrue(TEXT("Seal expires at its round boundary"), bSealExpired) &&
+		TestTrue(TEXT("Guardian executes"), bGuardExecuted) &&
+		TestTrue(TEXT("Guardian survives two round boundaries"), bGuardSurvivesTwo) &&
+		TestTrue(TEXT("Guardian expires after two rounds"), bGuardExpired);
 }
 
 #endif // WITH_DEV_AUTOMATION_TESTS

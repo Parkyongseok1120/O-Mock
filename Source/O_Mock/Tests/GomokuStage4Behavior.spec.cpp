@@ -297,7 +297,7 @@ bool FGomokuStage4_RoundIncrementsOnlyAfterAllActive::RunTest(const FString& Par
 	auto* Engine = MakeStage4Engine(3, 15);
 	GS->SetRuleEngineRef(Engine);
 
-	GS->InitializeForLocalHotseat_Implementation(3);
+	GS->InitializeForLocalHotseat(3);
 
 	int32 StartRound = GS->CurrentRoundIndex;
 
@@ -364,7 +364,7 @@ bool FGomokuStage4_InactiveExcludedFromRound::RunTest(const FString& Parameters)
 	auto* Engine = MakeStage4Engine(4, 15);
 	GS->SetRuleEngineRef(Engine);
 
-	GS->InitializeForLocalHotseat_Implementation(4);
+	GS->InitializeForLocalHotseat(4);
 
 	int32 StartRound = GS->CurrentRoundIndex;
 
@@ -376,7 +376,7 @@ bool FGomokuStage4_InactiveExcludedFromRound::RunTest(const FString& Parameters)
 	}
 
 	// Abandon current player (P1) without counting completion.
-	GS->RequestAbandonCurrentPlayer_Implementation();
+	GS->RequestAbandonCurrentPlayer();
 
 	TArray<int32> ActiveIndices = Engine->GetActivePlayerIndices();
 	if (!TestFalse(TEXT("Index 1 not in active after abandon"), ActiveIndices.Contains(1)))
@@ -427,7 +427,7 @@ bool FGomokuStage4_TimeSystem3And4Players::RunTest(const FString& Parameters)
 
 		auto* Engine = MakeStage4Engine(Players, 15);
 		GS->SetRuleEngineRef(Engine);
-		GS->InitializeForLocalHotseat_Implementation(Players);
+		GS->InitializeForLocalHotseat(Players);
 
 		if (!TestEqual(TEXT("LocalPlayerCount matches Players"), GS->LocalPlayerCount, Players)) { World->DestroyWorld(false); return false; }
 		if (!TestEqual(TEXT("PlayerTimes count matches Players"), GS->PlayerTimes.Num(), Players)) { World->DestroyWorld(false); return false; }
@@ -488,6 +488,40 @@ bool FGomokuStage4_Board21x21FourPlayers::RunTest(const FString& Parameters)
 	if (!TestEqual(TEXT("Turn cycle with 4 players on 21x21"), Cycle, ExpectedCycle)) return false;
 
 	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FGomokuStage4_SkippedPlayerCompletesRound,
+	TEXT("Gomoku.Stage4.SkippedPlayerCompletesRound"),
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FGomokuStage4_SkippedPlayerCompletesRound::RunTest(const FString& Parameters)
+{
+	UWorld* World = UWorld::CreateWorld(EWorldType::Game, false);
+	if (!TestNotNull(TEXT("World created"), World))
+	{
+		return false;
+	}
+
+	AGomokuGameState* GameState = World->SpawnActor<AGomokuGameState>();
+	UGomokuRuleEngine* Engine = MakeStage4Engine(3, 15);
+	GameState->SetRuleEngineRef(Engine);
+	GameState->InitializeForLocalHotseat(3);
+	Engine->SetPlayerSkipNextTurn(2, true);
+
+	GameState->HandlePlaceStone(0, FIntPoint(0, 0));
+	const bool bSkipValid =
+		TestEqual(TEXT("Player two is skipped"), GameState->CurrentPlayerIndex, 2) &&
+		TestTrue(TEXT("Skipped player counts as completed this round"), GameState->PlayersCompletedThisRound.Contains(1)) &&
+		TestEqual(TEXT("Round remains one until player three acts"), GameState->CurrentRoundIndex, 1);
+
+	GameState->HandlePlaceStone(2, FIntPoint(1, 0));
+	const bool bRoundValid =
+		TestEqual(TEXT("Round completes after the remaining active action"), GameState->CurrentRoundIndex, 2) &&
+		TestEqual(TEXT("Next round returns to player one"), GameState->CurrentPlayerIndex, 0);
+
+	World->DestroyWorld(false);
+	return bSkipValid && bRoundValid;
 }
 
 #endif // WITH_DEV_AUTOMATION_TESTS

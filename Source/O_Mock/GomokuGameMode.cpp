@@ -7,7 +7,9 @@
 #include "GomokuPlayerController.h"
 #include "GomokuHUD.h"
 #include "GomokuPlayerState.h"
-#include "GameFramework/DefaultPawn.h"
+#include "EngineUtils.h"
+
+DEFINE_LOG_CATEGORY_STATIC(LogGomokuGameMode, Log, All);
 
 AGomokuGameMode::AGomokuGameMode()
 {
@@ -17,7 +19,7 @@ AGomokuGameMode::AGomokuGameMode()
 	PlayerControllerClass = AGomokuPlayerController::StaticClass();
 	PlayerStateClass = AGomokuPlayerState::StaticClass();
 	HUDClass = AGomokuHUD::StaticClass();
-	DefaultPawnClass = ADefaultPawn::StaticClass();
+	DefaultPawnClass = nullptr;
 	bUseSeamlessTravel = false;
 }
 
@@ -56,24 +58,26 @@ void AGomokuGameMode::BeginPlay()
 		GS->LocalPlayerCount = 0;
 		GS->PlayerTimes.Reset();
 		bMatchStarted = false;
-		return;
 	}
 
-	if (!BoardActor.IsValid())
-	{
-		FTransform BoardTransform(FVector::ZeroVector);
-		BoardActor = World->SpawnActor<AGomokuBoardActor>(
-			AGomokuBoardActor::StaticClass(),
-			BoardTransform
-		);
-	}
+	EnsureBoardActor();
+	ConfigureBoardActor();
+	UE_LOG(LogGomokuGameMode, Display, TEXT("Gomoku runtime ready: map=%s mode=%s board=%s active=%s"),
+		*World->GetMapName(), World->GetNetMode() == NM_Standalone ? TEXT("Standalone") : TEXT("Network"),
+		*GetNameSafe(BoardActor.Get()), GetGomokuGameState() && GetGomokuGameState()->IsGameActive ? TEXT("true") : TEXT("false"));
+}
 
-	FGomokuMatchConfig Config;
-	if (BuildMatchConfig(Config) && BoardActor.IsValid())
-	{
-		BoardActor->ApplyBoardSize(Config.BoardSizeX, Config.BoardSizeY);
-		BoardActor->FitCameraToBoard();
-	}
+void AGomokuGameMode::HandleStartingNewPlayer_Implementation(APlayerController* NewPlayer)
+{
+	// This board game is driven directly by PlayerController input and a board camera.
+	// Deliberately skip pawn spawning so an empty editor map needs no PlayerStart actor.
+}
+
+AActor* AGomokuGameMode::ChoosePlayerStart_Implementation(AController* Player)
+{
+	// No pawn is spawned, but returning a stable start spot keeps the engine's
+	// generic login path valid on intentionally empty prototype maps.
+	return this;
 }
 
 AGomokuGameState* AGomokuGameMode::GetGomokuGameState() const
@@ -84,28 +88,9 @@ AGomokuGameState* AGomokuGameMode::GetGomokuGameState() const
 void AGomokuGameMode::RestartGame()
 {
 	if (AGomokuGameState* GS = GetGomokuGameState())
+	{
 		GS->RestartMatch();
-
-	FGomokuMatchConfig Config;
-
-	if (BoardTemplate)
-	{
-		int32 MaxPlayers = FMath::Clamp(DefaultHotseatPlayers, 2, 4);
-		Config.BoardSizeX = BoardTemplate->Width;
-		Config.BoardSizeY = BoardTemplate->Height;
-		Config.WinLength = 5;
-		Config.MaxPlayers = MaxPlayers;
-		Config.BlockedCells = BoardTemplate->BlockedCells;
 	}
-	else
-	{
-		Config = RuleEngine->GetMatchConfig();
-	}
-
-	RuleEngine->InitializeMatch(Config);
-
-	if (AGomokuBoardActor* Board = GetBoardActor())
-		Board->ClearStones();
 }
 
 void AGomokuGameMode::TravelToMatch(const FString& MapName)
@@ -254,6 +239,23 @@ void AGomokuGameMode::PostLogin(APlayerController* NewPlayer)
 
 void AGomokuGameMode::Logout(AController* Exiting)
 {
+	int32 DepartingPlayerId = 0;
+	if (Exiting)
+	{
+		if (const AGomokuPlayerState* DepartingState = Exiting->GetPlayerState<AGomokuPlayerState>())
+		{
+			DepartingPlayerId = DepartingState->GomokuPlayerId;
+		}
+	}
+
+	if (HasAuthority() && bMatchStarted && DepartingPlayerId > 0)
+	{
+		if (AGomokuGameState* GS = GetGomokuGameState())
+		{
+			GS->RequestAbandonPlayer(DepartingPlayerId);
+		}
+	}
+
 	Super::Logout(Exiting);
 
 	if (!HasAuthority())
@@ -329,21 +331,8 @@ bool AGomokuGameMode::TryStartMatch(APlayerController* RequestingPlayer, const F
 	InitializeMatchFromSettings();
 	bMatchStarted = true;
 
-	if (UWorld* World = GetWorld())
-	{
-		if (!BoardActor.IsValid())
-		{
-			BoardActor = World->SpawnActor<AGomokuBoardActor>(
-				AGomokuBoardActor::StaticClass(), FTransform(FVector::ZeroVector));
-		}
-
-		FGomokuMatchConfig Config;
-		if (BuildMatchConfig(Config) && BoardActor.IsValid())
-		{
-			BoardActor->ApplyBoardSize(Config.BoardSizeX, Config.BoardSizeY);
-			BoardActor->FitCameraToBoard();
-		}
-	}
+	EnsureBoardActor();
+	ConfigureBoardActor();
 
 	if (!MapName.IsEmpty())
 	{
@@ -360,4 +349,43 @@ bool AGomokuGameMode::TryStartMatch(APlayerController* RequestingPlayer, const F
 	}
 
 	return true;
+}
+
+AGomokuBoardActor* AGomokuGameMode::EnsureBoardActor()
+{
+	if (BoardActor.IsValid())
+	{
+		return BoardActor.Get();
+	}
+
+	UWorld* World = GetWorld();
+	if (!World || !HasAuthority())
+	{
+		return nullptr;
+	}
+
+	for (TActorIterator<AGomokuBoardActor> It(World); It; ++It)
+	{
+		BoardActor = *It;
+		return BoardActor.Get();
+	}
+
+	BoardActor = World->SpawnActor<AGomokuBoardActor>(AGomokuBoardActor::StaticClass(), FTransform::Identity);
+	return BoardActor.Get();
+}
+
+void AGomokuGameMode::ConfigureBoardActor()
+{
+	AGomokuBoardActor* Board = EnsureBoardActor();
+	if (!Board)
+	{
+		return;
+	}
+
+	FGomokuMatchConfig Config;
+	if (BuildMatchConfig(Config))
+	{
+		Board->ApplyBoardSize(Config.BoardSizeX, Config.BoardSizeY);
+		Board->FitCameraToBoard();
+	}
 }

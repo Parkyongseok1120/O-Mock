@@ -9,6 +9,33 @@
 #include "GomokuPlayerState.h"
 #include "Engine/Engine.h"
 
+static FString GetGomokuPhaseLabel(EMatchPhase Phase)
+{
+	switch (Phase)
+	{
+	case EMatchPhase::Waiting: return TEXT("Waiting");
+	case EMatchPhase::Playing: return TEXT("Playing");
+	case EMatchPhase::MiniGameIntro: return TEXT("Mini-game intro");
+	case EMatchPhase::MiniGamePlaying: return TEXT("Mini-game");
+	case EMatchPhase::MiniGameResult: return TEXT("Mini-game result");
+	case EMatchPhase::GameOver: return TEXT("Game over");
+	default: return TEXT("Unknown");
+	}
+}
+
+static FString GetGomokuItemLabel(int32 ItemId)
+{
+	switch (ItemId)
+	{
+	case 1: return TEXT("1:Seal(1)");
+	case 2: return TEXT("2:Pull(1)");
+	case 3: return TEXT("3:Steal(3)");
+	case 4: return TEXT("4:Skip(3)");
+	case 5: return TEXT("5:Guard(2)");
+	default: return FString::Printf(TEXT("%d:?"), ItemId);
+	}
+}
+
 AGomokuHUD::AGomokuHUD()
 {
 }
@@ -41,7 +68,15 @@ void AGomokuHUD::DrawHUD()
 	FString TextToDraw = bShowGameOver ? GameOverText : CurrentTurnText;
 	if (GomokuGameState && GomokuGameState->MatchPhase == EMatchPhase::MiniGamePlaying)
 	{
-		TextToDraw = FString::Printf(TEXT("Mini-game: choose a cell (%.1fs)"), GomokuGameState->MiniGameRemainingTime);
+		TextToDraw = FString::Printf(TEXT("Mini-game: complete five in a row (%.1fs)"), GomokuGameState->MiniGameRemainingTime);
+	}
+	else if (GomokuGameState && GomokuGameState->MatchPhase == EMatchPhase::MiniGameResult)
+	{
+		TextToDraw = FString::Printf(TEXT("Mini-game result (resume in %.1fs)"), GomokuGameState->MiniGameResultRemainingTime);
+	}
+	else if (GomokuGameState && GomokuGameState->MatchPhase == EMatchPhase::Waiting)
+	{
+		TextToDraw = TEXT("Lobby: press T to ready, then host presses Enter to start");
 	}
 	if (!TextToDraw.IsEmpty())
 	{
@@ -54,16 +89,35 @@ void AGomokuHUD::DrawHUD()
 	float Y = 140.f;
 	if (GomokuGameState)
 	{
-		const FString RoundText = FString::Printf(TEXT("Round %d | Phase %d"),
-			GomokuGameState->CurrentRoundIndex, static_cast<int32>(GomokuGameState->MatchPhase));
+		const FString RoundText = FString::Printf(TEXT("Round %d | %s"),
+			GomokuGameState->CurrentRoundIndex, *GetGomokuPhaseLabel(GomokuGameState->MatchPhase));
 		DrawText(RoundText, FLinearColor(0.7f, 0.85f, 1.f), 40.f, Y, Font, 1.0f, false);
 		Y += 22.f;
-	}
-	for (int32 i = 0; i < PlayerTimeStrings.Num(); ++i)
-	{
-		if (!PlayerTimeStrings[i].IsEmpty())
+		if (GomokuGameState->MatchPhase == EMatchPhase::Waiting)
 		{
-			DrawText(PlayerTimeStrings[i], FLinearColor::White, 40.f, Y, Font, 1.0f, false);
+			for (const APlayerState* ExistingState : GomokuGameState->PlayerArray)
+			{
+				const AGomokuPlayerState* LobbyPlayer = Cast<AGomokuPlayerState>(ExistingState);
+				if (!LobbyPlayer)
+				{
+					continue;
+				}
+				const FString ReadyText = FString::Printf(TEXT("P%d: %s"), LobbyPlayer->GomokuPlayerId,
+					LobbyPlayer->bReady ? TEXT("Ready") : TEXT("Not ready"));
+				DrawText(ReadyText, LobbyPlayer->bReady ? FLinearColor::Green : FLinearColor::White,
+					40.f, Y, Font, 1.0f, false);
+				Y += 22.f;
+			}
+		}
+		for (int32 PlayerIndex = 0; PlayerIndex < GomokuGameState->PlayerTimes.Num(); ++PlayerIndex)
+		{
+			const FGomokuPlayerTimeState& TimeState = GomokuGameState->PlayerTimes[PlayerIndex];
+			const FString TimeText = FString::Printf(TEXT("P%d: %.1fs total | %.1fs turn"),
+				PlayerIndex + 1, TimeState.PersonalRemaining,
+				FMath::Max(0.0f, GomokuGameState->MaxTurnTime - TimeState.TurnElapsedThisTurn));
+			const FLinearColor TimeColor = PlayerIndex == GomokuGameState->CurrentPlayerIndex
+				? FLinearColor::Yellow : FLinearColor::White;
+			DrawText(TimeText, TimeColor, 40.f, Y, Font, 1.0f, false);
 			Y += 22.f;
 		}
 	}
@@ -81,7 +135,15 @@ void AGomokuHUD::DrawHUD()
 		{
 			TArray<int32> ItemIds;
 			int32 Energy = 0;
-			if (const AGomokuPlayerState* PlayerState = PC->GetPlayerState<AGomokuPlayerState>())
+			if (GetNetMode() == NM_Standalone && GomokuGameState && GomokuGameState->GetRuleEngine()
+				&& GomokuGameState->CurrentPlayerIndex >= 0)
+			{
+				const FGomokuPlayerStateData Data = GomokuGameState->GetRuleEngine()->GetPlayerStateData(
+					GomokuGameState->CurrentPlayerIndex + 1);
+				ItemIds = Data.ItemIds;
+				Energy = Data.Energy;
+			}
+			else if (const AGomokuPlayerState* PlayerState = PC->GetPlayerState<AGomokuPlayerState>())
 			{
 				ItemIds = PlayerState->InventoryItemIds;
 				Energy = PlayerState->Energy;
@@ -96,11 +158,14 @@ void AGomokuHUD::DrawHUD()
 			FString InventoryText = FString::Printf(TEXT("Energy: %d | Items:"), Energy);
 			for (const int32 ItemId : ItemIds)
 			{
-				InventoryText += FString::Printf(TEXT(" %d"), ItemId);
+				InventoryText += FString::Printf(TEXT(" [%s]"), *GetGomokuItemLabel(ItemId));
 			}
 			DrawText(InventoryText, FLinearColor(0.5f, 0.8f, 0.7f), 40.f, Y, Font, 1.0f, false);
+			Y += 22.f;
 		}
 	}
+	DrawText(TEXT("LMB: place/select | 1-5: select item | Esc: cancel | R: restart"),
+		FLinearColor(0.72f, 0.72f, 0.72f), 40.f, Y + 10.f, Font, 0.9f, false);
 }
 
 void AGomokuHUD::HandleTurnChanged(int32 PlayerIndex, int32 /*RoundIndex*/)
@@ -167,7 +232,7 @@ void AGomokuHUD::OnTickPlayerTime(int32 PlayerIndex, const FGomokuPlayerTimeStat
 	if (PlayerIndex < 0 || !GomokuGameState)
 		return;
 
-	const int32 Count = GomokuGameState->GetNumActivePlayers();
+	const int32 Count = GomokuGameState->PlayerTimes.Num();
 	if (Count <= 0 || PlayerIndex >= Count)
 		return;
 

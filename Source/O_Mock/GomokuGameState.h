@@ -84,7 +84,7 @@ public:
 	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Time")
 	FIntPoint HoveredCell = FIntPoint(-1, -1);
 
-	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Gomoku|Match")
+	UPROPERTY(ReplicatedUsing=OnRep_MatchPresentation, BlueprintReadOnly, Category = "Gomoku|Match")
 	EMatchPhase MatchPhase = EMatchPhase::Waiting;
 
 	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Gomoku|MiniGame")
@@ -93,8 +93,12 @@ public:
 	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Gomoku|MiniGame")
 	float MiniGameRemainingTime = 0.0f;
 
+	/** Public 7x7 puzzle data. The correct answer remains server-only. */
+	UPROPERTY(ReplicatedUsing=OnRep_MatchPresentation, BlueprintReadOnly, Category = "Gomoku|MiniGame")
+	TArray<ECellState> MiniGamePuzzleCells;
+
 	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Gomoku|MiniGame")
-	FIntPoint MiniGameTargetCell = FIntPoint(-1, -1);
+	float MiniGameResultRemainingTime = 0.0f;
 
 	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Gomoku|MiniGame")
 	TArray<int32> MiniGameSubmittedPlayerIndices;
@@ -167,6 +171,9 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Gomoku|Match")
 	void RequestAbandonCurrentPlayer();
 
+	/** Server-only transition used by Logout and the owning controller. PlayerId is 1-based. */
+	void RequestAbandonPlayer(int32 PlayerId);
+
 	UFUNCTION(BlueprintCallable, Category = "Gomoku|MiniGame")
 	void StartMiniGame();
 
@@ -192,13 +199,6 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Gomoku|Time")
 	void ApplyEndOfRoundRecovery();
 
-	// regression_a: 기존 테스트에서 InitializeForLocalHotseat_Implementation / RequestAbandonCurrentPlayer_Implementation 호출을
-	// 공용 함수로 바꾼 뒤 제거할 임시 호환 코드 (RPC 없이 로컬 테스트 전용).
-#if WITH_DEV_AUTOMATION_TESTS
-	void InitializeForLocalHotseat_Implementation(int32 MaxPlayers) { InitializeForLocalHotseat(MaxPlayers); }
-	void RequestAbandonCurrentPlayer_Implementation() { RequestAbandonCurrentPlayer(); }
-#endif
-
 protected:
 	virtual void BeginPlay() override;
 	virtual void Tick(float DeltaTime) override;
@@ -206,7 +206,7 @@ protected:
 
 private:
 	TWeakObjectPtr<UGomokuRuleEngine> RuleEngine;
-	float TurnStartTime = 0.0f;
+	FIntPoint MiniGameAnswerCell = FIntPoint(-1, -1);
 
 	void StartNewTurn();
 	// bSkipCompletionTracking: when true, do not count current player as completed for this round (used by abandon).
@@ -226,4 +226,7 @@ private:
 
 	UFUNCTION()
 	void OnRep_ReplicatedBoardCells(const TArray<ECellState>& PreviousCells);
+
+	UFUNCTION()
+	void OnRep_MatchPresentation();
 };

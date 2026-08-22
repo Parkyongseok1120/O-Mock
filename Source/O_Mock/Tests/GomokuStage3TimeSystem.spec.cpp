@@ -37,7 +37,7 @@ bool FGomokuStage3_TimeDefaults::RunTest(const FString& Parameters)
 
 	auto* Engine = MakeEngine(2, 15);
 	GS->SetRuleEngineRef(Engine);
-	GS->InitializeForLocalHotseat_Implementation(2);
+	GS->InitializeForLocalHotseat(2);
 
 	if (!TestEqual(TEXT("MaxPersonalTime is 120"), GS->MaxPersonalTime, 120.0f)) { World->DestroyWorld(false); return false; }
 	if (!TestEqual(TEXT("MaxTurnTime is 25"), GS->MaxTurnTime, 25.0f)) { World->DestroyWorld(false); return false; }
@@ -70,7 +70,7 @@ bool FGomokuStage3_PauseStopsTick::RunTest(const FString& Parameters)
 
 	auto* Engine = MakeEngine(2, 15);
 	GS->SetRuleEngineRef(Engine);
-	GS->InitializeForLocalHotseat_Implementation(2);
+	GS->InitializeForLocalHotseat(2);
 
 	int32 CurrentIdx = GS->CurrentPlayerIndex;
 	if (!TestEqual(TEXT("CurrentPlayerIndex is 0"), CurrentIdx, 0)) { World->DestroyWorld(false); return false; }
@@ -116,7 +116,7 @@ bool FGomokuStage3_EndOfRoundRecovery::RunTest(const FString& Parameters)
 
 	auto* Engine = MakeEngine(2, 15);
 	GS->SetRuleEngineRef(Engine);
-	GS->InitializeForLocalHotseat_Implementation(2);
+	GS->InitializeForLocalHotseat(2);
 
 	int32 PIdx = 0;
 	float MaxTime = GS->MaxPersonalTime;
@@ -149,6 +149,43 @@ bool FGomokuStage3_EndOfRoundRecovery::RunTest(const FString& Parameters)
 
 	World->DestroyWorld(false);
 	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FGomokuStage3_TimeChargedExactlyOnce,
+	TEXT("Gomoku.Stage3.TimeChargedExactlyOnce"),
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FGomokuStage3_TimeChargedExactlyOnce::RunTest(const FString& Parameters)
+{
+	UWorld* World = UWorld::CreateWorld(EWorldType::Game, false);
+	if (!TestNotNull(TEXT("World created"), World))
+	{
+		return false;
+	}
+
+	AGomokuGameState* GameState = World->SpawnActor<AGomokuGameState>();
+	UGomokuRuleEngine* Engine = MakeEngine(2, 15);
+	GameState->SetRuleEngineRef(Engine);
+	GameState->InitializeForLocalHotseat(2);
+
+	GameState->TickTimeSystem(5.0f);
+	const bool bTickValid =
+		TestTrue(TEXT("Five seconds are charged from personal time"),
+			FMath::IsNearlyEqual(GameState->PlayerTimes[0].PersonalRemaining, 115.0f)) &&
+		TestTrue(TEXT("Turn elapsed advances by the same five seconds"),
+			FMath::IsNearlyEqual(GameState->PlayerTimes[0].TurnElapsedThisTurn, 5.0f));
+
+	GameState->HandlePlaceStone(0, FIntPoint(7, 7));
+	const bool bTurnEndValid =
+		TestTrue(TEXT("Ending the turn does not charge elapsed time a second time"),
+			FMath::IsNearlyEqual(GameState->PlayerTimes[0].PersonalRemaining, 115.0f)) &&
+		TestTrue(TEXT("Inactive player's personal time did not move"),
+			FMath::IsNearlyEqual(GameState->PlayerTimes[1].PersonalRemaining, 120.0f)) &&
+		TestEqual(TEXT("Turn advances to player two"), GameState->CurrentPlayerIndex, 1);
+
+	World->DestroyWorld(false);
+	return bTickValid && bTurnEndValid;
 }
 
 #endif // WITH_DEV_AUTOMATION_TESTS

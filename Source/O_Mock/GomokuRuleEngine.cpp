@@ -30,7 +30,9 @@ int32 UGomokuRuleEngine::CellStateToPlayerId(ECellState State)
 void UGomokuRuleEngine::InitializeMatch(const FGomokuMatchConfig& Config)
 {
 	TurnDirection = 1;
-	GuardianProtectedCells.Reset();
+	GuardianProtectionExpireRounds.Reset();
+	TemporaryBlockedCellExpireRounds.Reset();
+	LastSkipTargetPlayerId = INDEX_NONE;
 	LastItemWinResult = FGomokuWinResult();
 
 	MatchConfig = Config;
@@ -38,6 +40,7 @@ void UGomokuRuleEngine::InitializeMatch(const FGomokuMatchConfig& Config)
 	MatchConfig.BoardSizeY = FMath::Max(1, MatchConfig.BoardSizeY);
 	MatchConfig.WinLength = FMath::Max(1, MatchConfig.WinLength);
 	MatchConfig.MaxPlayers = FMath::Clamp(MatchConfig.MaxPlayers, 2, 4);
+	MatchConfig.InitialEnergyPerPlayer = FMath::Clamp(MatchConfig.InitialEnergyPerPlayer, 0, UGomokuItemLibrary::MaxEnergy);
 
 	Board.Reset(MatchConfig.BoardSizeX, MatchConfig.BoardSizeY);
 
@@ -155,6 +158,7 @@ bool UGomokuRuleEngine::RemoveStoneAt(int32 X, int32 Y)
 	}
 
 	Board.Set(X, Y, ECellState::Empty);
+	GuardianProtectionExpireRounds.Remove(FIntPoint(X, Y));
 	return true;
 }
 
@@ -228,13 +232,63 @@ bool UGomokuRuleEngine::SetCellBlocked(int32 X, int32 Y, bool bBlocked)
 	if (GetCellState(X, Y) == ECellState::Blocked)
 	{
 		Board.Set(X, Y, ECellState::Empty);
+		TemporaryBlockedCellExpireRounds.Remove(FIntPoint(X, Y));
 		return true;
 	}
 	return false;
 }
 
+bool UGomokuRuleEngine::MoveStone(int32 PlayerId, const FIntPoint& Source, const FIntPoint& Destination)
+{
+	if (!IsActiveMatchPlayer(PlayerId) || !IsValidCoordinate(Source.X, Source.Y) ||
+		!IsValidCoordinate(Destination.X, Destination.Y) || IsCellGuardianProtected(Source.X, Source.Y))
+	{
+		return false;
+	}
+	if (CellStateToPlayerId(GetCellState(Source.X, Source.Y)) != PlayerId ||
+		GetCellState(Destination.X, Destination.Y) != ECellState::Empty)
+	{
+		return false;
+	}
+
+	const ECellState StoneState = GetCellState(Source.X, Source.Y);
+	Board.Set(Destination.X, Destination.Y, StoneState);
+	Board.Set(Source.X, Source.Y, ECellState::Empty);
+	GuardianProtectionExpireRounds.Remove(Source);
+	return true;
+}
+
+bool UGomokuRuleEngine::IsStoneIsolated(const FIntPoint& Cell) const
+{
+	const ECellState Center = GetCellState(Cell.X, Cell.Y);
+	if (Center < ECellState::Player1 || Center > ECellState::Player4)
+	{
+		return false;
+	}
+	for (int32 DeltaY = -1; DeltaY <= 1; ++DeltaY)
+	{
+		for (int32 DeltaX = -1; DeltaX <= 1; ++DeltaX)
+		{
+			if (DeltaX == 0 && DeltaY == 0)
+			{
+				continue;
+			}
+			const ECellState Neighbour = GetCellState(Cell.X + DeltaX, Cell.Y + DeltaY);
+			if (Neighbour == Center)
+			{
+				return false;
+			}
+		}
+	}
+	return true;
+}
+
 bool UGomokuRuleEngine::ConsumePlayerEnergy(int32 PlayerId, int32 Cost)
 {
+	if (Cost < 0)
+	{
+		return false;
+	}
 	if (FGomokuPlayerStateData* Player = FindPlayerMutable(PlayerId))
 	{
 		if (Player->Energy < Cost)
@@ -249,6 +303,10 @@ bool UGomokuRuleEngine::ConsumePlayerEnergy(int32 PlayerId, int32 Cost)
 
 bool UGomokuRuleEngine::AddPlayerEnergy(int32 PlayerId, int32 Amount, int32 MaxEnergy)
 {
+	if (Amount < 0 || MaxEnergy < 0)
+	{
+		return false;
+	}
 	if (FGomokuPlayerStateData* Player = FindPlayerMutable(PlayerId))
 	{
 		Player->Energy = FMath::Min(MaxEnergy, Player->Energy + Amount);
@@ -298,7 +356,11 @@ bool UGomokuRuleEngine::AddItemToInventory(int32 PlayerId, int32 ItemId)
 	if (!Player)
 		return false;
 
-	Player->ItemIds.AddUnique(ItemId);
+	if (Player->ItemIds.Num() >= 2 || Player->ItemIds.Contains(ItemId))
+	{
+		return false;
+	}
+	Player->ItemIds.Add(ItemId);
 	return true;
 }
 
@@ -373,6 +435,8 @@ void UGomokuRuleEngine::AdvanceTurn()
 			if (Player->bSkipNextTurn)
 			{
 				Player->bSkipNextTurn = false;
+				Player->ItemIdsGainedThisTurn.Reset();
+				Player->bUsedItemThisTurn = false;
 				continue;
 			}
 		}
@@ -443,7 +507,15 @@ bool UGomokuRuleEngine::SetPlayerSkipNextTurn(int32 PlayerId, bool bSkip)
 {
 	if (FGomokuPlayerStateData* Player = FindPlayerMutable(PlayerId))
 	{
+		if (bSkip && (!IsActiveMatchPlayer(PlayerId) || Player->bSkipNextTurn || LastSkipTargetPlayerId == PlayerId))
+		{
+			return false;
+		}
 		Player->bSkipNextTurn = bSkip;
+		if (bSkip)
+		{
+			LastSkipTargetPlayerId = PlayerId;
+		}
 		return true;
 	}
 	return false;
@@ -645,9 +717,9 @@ bool UGomokuRuleEngine::SetCellGuardianProtected(int32 X, int32 Y, bool bProtect
 		return false;
 
 	if (bProtect)
-		GuardianProtectedCells.Add(FIntPoint(X, Y));
+		GuardianProtectionExpireRounds.Add(FIntPoint(X, Y), MAX_int32);
 	else
-		GuardianProtectedCells.Remove(FIntPoint(X, Y));
+		GuardianProtectionExpireRounds.Remove(FIntPoint(X, Y));
 
 	return true;
 }
@@ -655,5 +727,64 @@ bool UGomokuRuleEngine::SetCellGuardianProtected(int32 X, int32 Y, bool bProtect
 bool UGomokuRuleEngine::IsCellGuardianProtected(int32 X, int32 Y) const
 {
 	if (!IsValidCoordinate(X, Y)) return false;
-	return GuardianProtectedCells.Contains(FIntPoint(X, Y));
+	return GuardianProtectionExpireRounds.Contains(FIntPoint(X, Y));
+}
+
+bool UGomokuRuleEngine::ApplyTemporaryBlock(const FIntPoint& Cell, int32 ExpireAfterRound)
+{
+	if (ExpireAfterRound < 1 || !SetCellBlocked(Cell.X, Cell.Y, true))
+	{
+		return false;
+	}
+	TemporaryBlockedCellExpireRounds.Add(Cell, ExpireAfterRound);
+	return true;
+}
+
+bool UGomokuRuleEngine::ApplyGuardianProtection(const FIntPoint& Cell, int32 ExpireAfterRound)
+{
+	if (ExpireAfterRound < 1 || !SetCellGuardianProtected(Cell.X, Cell.Y, true))
+	{
+		return false;
+	}
+	GuardianProtectionExpireRounds.Add(Cell, ExpireAfterRound);
+	return true;
+}
+
+void UGomokuRuleEngine::ExpireRoundEffects(int32 CompletedRoundIndex)
+{
+	TArray<FIntPoint> BlocksToExpire;
+	for (const TPair<FIntPoint, int32>& Pair : TemporaryBlockedCellExpireRounds)
+	{
+		if (Pair.Value <= CompletedRoundIndex)
+		{
+			BlocksToExpire.Add(Pair.Key);
+		}
+	}
+	for (const FIntPoint& Cell : BlocksToExpire)
+	{
+		SetCellBlocked(Cell.X, Cell.Y, false);
+	}
+
+	TArray<FIntPoint> GuardsToExpire;
+	for (const TPair<FIntPoint, int32>& Pair : GuardianProtectionExpireRounds)
+	{
+		if (Pair.Value <= CompletedRoundIndex)
+		{
+			GuardsToExpire.Add(Pair.Key);
+		}
+	}
+	for (const FIntPoint& Cell : GuardsToExpire)
+	{
+		GuardianProtectionExpireRounds.Remove(Cell);
+	}
+}
+
+int32 UGomokuRuleEngine::ResolveActivePlayerId(int32 ActivePlayerListIndex) const
+{
+	if (!ActivePlayerIndices.IsValidIndex(ActivePlayerListIndex))
+	{
+		return INDEX_NONE;
+	}
+	const int32 PlayerIndex = ActivePlayerIndices[ActivePlayerListIndex];
+	return PlayerOrder.IsValidIndex(PlayerIndex) ? PlayerOrder[PlayerIndex] : INDEX_NONE;
 }
