@@ -7,9 +7,22 @@
 #include "GomokuPlayerController.h"
 #include "GomokuHUD.h"
 #include "GomokuPlayerState.h"
+#include "GomokuGameInstance.h"
 #include "EngineUtils.h"
+#include "Kismet/GameplayStatics.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogGomokuGameMode, Log, All);
+
+static void ApplyPlayerCountBoardPolicy(FGomokuMatchConfig& Config)
+{
+	// The first playable-build contract uses a 21x21 board for four players.
+	// Larger explicit templates remain intact; smaller templates are expanded.
+	if (Config.MaxPlayers == 4)
+	{
+		Config.BoardSizeX = FMath::Max(Config.BoardSizeX, 21);
+		Config.BoardSizeY = FMath::Max(Config.BoardSizeY, 21);
+	}
+}
 
 AGomokuGameMode::AGomokuGameMode()
 {
@@ -21,6 +34,52 @@ AGomokuGameMode::AGomokuGameMode()
 	HUDClass = AGomokuHUD::StaticClass();
 	DefaultPawnClass = nullptr;
 	bUseSeamlessTravel = false;
+}
+
+void AGomokuGameMode::InitGame(const FString& MapName, const FString& Options, FString& ErrorMessage)
+{
+	Super::InitGame(MapName, Options, ErrorMessage);
+	const FString MaxPlayersOption = UGameplayStatics::ParseOption(Options, TEXT("MaxPlayers"));
+	if (!MaxPlayersOption.IsEmpty())
+	{
+		MaxLobbyPlayers = FMath::Clamp(FCString::Atoi(*MaxPlayersOption), 2, 4);
+	}
+	const FString BoardSizeOption = UGameplayStatics::ParseOption(Options, TEXT("BoardSize"));
+	const FString BotCountOption = UGameplayStatics::ParseOption(Options, TEXT("BotCount"));
+	const FString PersonalTimeOption = UGameplayStatics::ParseOption(Options, TEXT("PersonalTime"));
+	const FString TurnTimeOption = UGameplayStatics::ParseOption(Options, TEXT("TurnTime"));
+	const FString ItemsOption = UGameplayStatics::ParseOption(Options, TEXT("Items"));
+	const FString MiniGameOption = UGameplayStatics::ParseOption(Options, TEXT("MiniGame"));
+	const FString ProtectedOption = UGameplayStatics::ParseOption(Options, TEXT("PasswordProtected"));
+	ExpectedRoomPasswordHash = UGameplayStatics::ParseOption(Options, TEXT("RoomPasswordHash"));
+	RequestedBoardSize = FMath::Clamp(BoardSizeOption.IsEmpty() ? 15 : FCString::Atoi(*BoardSizeOption), 15, 23);
+	RequestedBotCount = FMath::Clamp(BotCountOption.IsEmpty() ? 0 : FCString::Atoi(*BotCountOption), 0, MaxLobbyPlayers - 1);
+	RequestedPersonalTimeSeconds = FMath::Clamp(PersonalTimeOption.IsEmpty() ? 120 : FCString::Atoi(*PersonalTimeOption), 30, 600);
+	RequestedTurnTimeSeconds = FMath::Clamp(TurnTimeOption.IsEmpty() ? 25 : FCString::Atoi(*TurnTimeOption), 5, 120);
+	bRequestedItemsEnabled = ItemsOption.IsEmpty() || FCString::Atoi(*ItemsOption) != 0;
+	bRequestedMiniGameEnabled = MiniGameOption.IsEmpty() || FCString::Atoi(*MiniGameOption) != 0;
+	bPasswordProtected = (!ProtectedOption.IsEmpty() && FCString::Atoi(*ProtectedOption) != 0)
+		|| !ExpectedRoomPasswordHash.IsEmpty();
+	UE_LOG(LogGomokuGameMode, Display,
+		TEXT("Lobby configured: max=%d bots=%d board=%d personal=%d turn=%d items=%d mini=%d locked=%d"),
+		MaxLobbyPlayers, RequestedBotCount, RequestedBoardSize, RequestedPersonalTimeSeconds, RequestedTurnTimeSeconds,
+		bRequestedItemsEnabled ? 1 : 0, bRequestedMiniGameEnabled ? 1 : 0, bPasswordProtected ? 1 : 0);
+}
+
+void AGomokuGameMode::PreLogin(const FString& Options, const FString& Address,
+	const FUniqueNetIdRepl& UniqueId, FString& ErrorMessage)
+{
+	Super::PreLogin(Options, Address, UniqueId, ErrorMessage);
+	if (!ErrorMessage.IsEmpty() || !bPasswordProtected)
+	{
+		return;
+	}
+	const FString SuppliedHash = UGameplayStatics::ParseOption(Options, TEXT("RoomPasswordHash"));
+	if (ExpectedRoomPasswordHash.IsEmpty() || !SuppliedHash.Equals(ExpectedRoomPasswordHash, ESearchCase::CaseSensitive))
+	{
+		ErrorMessage = TEXT("ROOM_PASSWORD_INVALID");
+		UE_LOG(LogGomokuGameMode, Warning, TEXT("Rejected LAN login from %s: invalid room password"), *Address);
+	}
 }
 
 void AGomokuGameMode::BeginPlay()
@@ -56,6 +115,14 @@ void AGomokuGameMode::BeginPlay()
 		GS->CurrentPlayerIndex = -1;
 		GS->MatchPhase = EMatchPhase::Waiting;
 		GS->LocalPlayerCount = 0;
+		GS->LobbyMaxPlayers = FMath::Clamp(MaxLobbyPlayers, 2, 4);
+		GS->LobbyBotCount = RequestedBotCount;
+		GS->LobbyBoardSize = RequestedBoardSize;
+		GS->MaxPersonalTime = static_cast<float>(RequestedPersonalTimeSeconds);
+		GS->MaxTurnTime = static_cast<float>(RequestedTurnTimeSeconds);
+		GS->bItemsEnabled = bRequestedItemsEnabled;
+		GS->bMiniGameEnabled = bRequestedMiniGameEnabled;
+		GS->bLobbyPasswordProtected = bPasswordProtected;
 		GS->PlayerTimes.Reset();
 		bMatchStarted = false;
 	}
@@ -116,6 +183,7 @@ void AGomokuGameMode::ApplyBoardTemplate()
 	Config.WinLength = 5;
 	Config.MaxPlayers = MaxPlayers;
 	Config.BlockedCells = BoardTemplate->BlockedCells;
+	ApplyPlayerCountBoardPolicy(Config);
 
 	RuleEngine->InitializeMatch(Config);
 
@@ -136,10 +204,11 @@ bool AGomokuGameMode::BuildMatchConfig(FGomokuMatchConfig& OutConfig) const
 {
 	int32 MaxPlayers = FMath::Clamp(DefaultHotseatPlayers, 2, 4);
 
-	OutConfig.BoardSizeX = 15;
-	OutConfig.BoardSizeY = 15;
+	OutConfig.BoardSizeX = FMath::Clamp(RequestedBoardSize, 15, 23);
+	OutConfig.BoardSizeY = FMath::Clamp(RequestedBoardSize, 15, 23);
 	OutConfig.WinLength = 5;
 	OutConfig.MaxPlayers = MaxPlayers;
+	OutConfig.TurnTimeLimit = static_cast<float>(RequestedTurnTimeSeconds);
 	OutConfig.BlockedCells.Reset();
 
 	if (BoardTemplate)
@@ -149,10 +218,14 @@ bool AGomokuGameMode::BuildMatchConfig(FGomokuMatchConfig& OutConfig) const
 			return false;
 		}
 
-		OutConfig.BoardSizeX = BoardTemplate->Width;
-		OutConfig.BoardSizeY = BoardTemplate->Height;
-		OutConfig.BlockedCells = BoardTemplate->BlockedCells;
+		// A selected room template owns dimensions. Reuse blocked cells only when the editor asset matches it.
+		if (BoardTemplate->Width == OutConfig.BoardSizeX && BoardTemplate->Height == OutConfig.BoardSizeY)
+		{
+			OutConfig.BlockedCells = BoardTemplate->BlockedCells;
+		}
 	}
+
+	ApplyPlayerCountBoardPolicy(OutConfig);
 
 	return true;
 }
@@ -179,6 +252,14 @@ void AGomokuGameMode::InitializeMatchFromSettings()
 
 	if (AGomokuGameState* GS = GetGomokuGameState())
 	{
+		GS->LobbyMaxPlayers = FMath::Clamp(MaxLobbyPlayers, 2, 4);
+		GS->LobbyBotCount = RequestedBotCount;
+		GS->LobbyBoardSize = Config.BoardSizeX;
+		GS->MaxPersonalTime = static_cast<float>(RequestedPersonalTimeSeconds);
+		GS->MaxTurnTime = static_cast<float>(RequestedTurnTimeSeconds);
+		GS->bItemsEnabled = bRequestedItemsEnabled;
+		GS->bMiniGameEnabled = bRequestedMiniGameEnabled;
+		GS->bLobbyPasswordProtected = bPasswordProtected;
 		GS->SetRuleEngineRef(RuleEngine);
 		GS->InitializeForLocalHotseat(Config.MaxPlayers);
 	}
@@ -190,6 +271,12 @@ void AGomokuGameMode::PostLogin(APlayerController* NewPlayer)
 
 	if (!HasAuthority() || !NewPlayer)
 	{
+		return;
+	}
+	if (bMatchStarted)
+	{
+		UE_LOG(LogGomokuGameMode, Warning, TEXT("Network player rejected: match already started"));
+		NewPlayer->Destroy();
 		return;
 	}
 
@@ -309,7 +396,10 @@ bool AGomokuGameMode::AreAllPlayersReady() const
 	}
 
 	const int32 PlayerCount = GameState->PlayerArray.Num();
-	if (PlayerCount < 2 || PlayerCount > FMath::Clamp(MaxLobbyPlayers, 2, 4))
+	const int32 AvailableBotSeats = FMath::Min(RequestedBotCount,
+		FMath::Max(0, FMath::Clamp(MaxLobbyPlayers, 2, 4) - PlayerCount));
+	if (PlayerCount < 1 || PlayerCount + AvailableBotSeats < 2
+		|| PlayerCount > FMath::Clamp(MaxLobbyPlayers, 2, 4))
 	{
 		return false;
 	}
@@ -326,6 +416,77 @@ bool AGomokuGameMode::AreAllPlayersReady() const
 	return true;
 }
 
+int32 AGomokuGameMode::SpawnRequestedBots()
+{
+	if (!HasAuthority() || !GameState || !GetWorld() || RequestedBotCount <= 0)
+	{
+		return 0;
+	}
+
+	TSet<int32> UsedIds;
+	for (APlayerState* ExistingState : GameState->PlayerArray)
+	{
+		if (const AGomokuPlayerState* GomokuState = Cast<AGomokuPlayerState>(ExistingState))
+		{
+			UsedIds.Add(GomokuState->GomokuPlayerId);
+		}
+	}
+
+	static const FLinearColor Colors[] = {
+		FLinearColor::Black,
+		FLinearColor::White,
+		FLinearColor(0.2f, 0.6f, 1.f),
+		FLinearColor(0.9f, 0.2f, 0.2f)
+	};
+	const int32 Capacity = FMath::Clamp(MaxLobbyPlayers, 2, 4);
+	const int32 BotsToSpawn = FMath::Min(RequestedBotCount, FMath::Max(0, Capacity - GameState->PlayerArray.Num()));
+	int32 SpawnedBots = 0;
+	for (int32 BotIndex = 0; BotIndex < BotsToSpawn; ++BotIndex)
+	{
+		int32 AssignedId = 0;
+		for (int32 CandidateId = 1; CandidateId <= Capacity; ++CandidateId)
+		{
+			if (!UsedIds.Contains(CandidateId))
+			{
+				AssignedId = CandidateId;
+				break;
+			}
+		}
+		if (AssignedId <= 0)
+		{
+			break;
+		}
+
+		FActorSpawnParameters SpawnParameters;
+		SpawnParameters.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+		UClass* EffectivePlayerStateClass = PlayerStateClass
+			? PlayerStateClass.Get()
+			: AGomokuPlayerState::StaticClass();
+		AGomokuPlayerState* BotState = GetWorld()->SpawnActor<AGomokuPlayerState>(
+			EffectivePlayerStateClass, FTransform::Identity, SpawnParameters);
+		if (!BotState)
+		{
+			continue;
+		}
+
+		BotState->SetIdentity(AssignedId, Colors[(AssignedId - 1) % UE_ARRAY_COUNT(Colors)]);
+		BotState->SetGomokuBot(true);
+		BotState->SetReady(true);
+		BotState->SetPlayerName(FString::Printf(TEXT("BOT %d"), AssignedId));
+		if (!GameState->PlayerArray.Contains(BotState))
+		{
+			GameState->AddPlayerState(BotState);
+		}
+		BotState->ForceNetUpdate();
+		UsedIds.Add(AssignedId);
+		++SpawnedBots;
+	}
+
+	UE_LOG(LogGomokuGameMode, Display, TEXT("Spawned %d/%d planned bots for %d total participants"),
+		SpawnedBots, RequestedBotCount, GameState->PlayerArray.Num());
+	return SpawnedBots;
+}
+
 bool AGomokuGameMode::TryStartMatch(APlayerController* RequestingPlayer, const FString& MapName)
 {
 	if (!HasAuthority() || bMatchStarted || !RequestingPlayer || !AreAllPlayersReady())
@@ -339,9 +500,14 @@ bool AGomokuGameMode::TryStartMatch(APlayerController* RequestingPlayer, const F
 		return false;
 	}
 
+	SpawnRequestedBots();
 	DefaultHotseatPlayers = FMath::Clamp(GameState->PlayerArray.Num(), 2, 4);
 	InitializeMatchFromSettings();
 	bMatchStarted = true;
+	if (UGomokuGameInstance* GameInstance = GetGameInstance<UGomokuGameInstance>())
+	{
+		GameInstance->SetLanRoomJoinable(false);
+	}
 	UE_LOG(LogGomokuGameMode, Display, TEXT("Network lobby match started: host=%s players=%d map=%s"),
 		*GetNameSafe(RequestingPlayer), DefaultHotseatPlayers, *MapName);
 

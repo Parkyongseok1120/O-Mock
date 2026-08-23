@@ -73,6 +73,18 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Gomoku|Items")
 	bool AddItemToInventory(int32 PlayerId, int32 ItemId);
 
+	/** Stores an owner-only replacement offer. The item must be registered and not already owned. */
+	UFUNCTION(BlueprintCallable, Category = "Gomoku|Items")
+	bool SetPendingInventoryItem(int32 PlayerId, int32 ItemId);
+
+	/** Atomically discards one owned item and inserts the pending offer, locked until the next turn. */
+	UFUNCTION(BlueprintCallable, Category = "Gomoku|Items")
+	bool ReplaceInventoryItemWithPending(int32 PlayerId, int32 DiscardItemId);
+
+	/** If a slot became free while an offer was pending, inserts it without discarding anything. */
+	UFUNCTION(BlueprintCallable, Category = "Gomoku|Items")
+	bool ClaimPendingInventoryItemIntoFreeSlot(int32 PlayerId);
+
 	/** Mark this item as gained this turn: not usable until next turn. */
 	UFUNCTION(BlueprintCallable, Category = "Gomoku|Items")
 	void MarkItemGainedThisTurn(int32 PlayerId, int32 ItemId);
@@ -100,6 +112,10 @@ public:
 	/** GuardianBarrier: query if a cell is currently protected. */
 	UFUNCTION(BlueprintPure, Category = "Gomoku|Items")
 	bool IsCellGuardianProtected(int32 X, int32 Y) const;
+
+	/** Public presentation snapshot for guarded-cell replication. */
+	UFUNCTION(BlueprintPure, Category = "Gomoku|Items")
+	TArray<FIntPoint> GetGuardianProtectedCells() const;
 
 	bool ApplyTemporaryBlock(const FIntPoint& Cell, int32 ExpireAfterRound);
 	bool ApplyGuardianProtection(const FIntPoint& Cell, int32 ExpireAfterRound);
@@ -219,9 +235,6 @@ private:
 
 	UPROPERTY()
 	TMap<FIntPoint, int32> TemporaryBlockedCellExpireRounds;
-
-	UPROPERTY()
-	int32 LastSkipTargetPlayerId = INDEX_NONE;
 
 	/** Cached win result from last item-driven board change (Steal/Pull). Set by GomokuItemLibrary. */
 	UPROPERTY()

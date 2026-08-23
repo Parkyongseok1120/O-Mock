@@ -27,7 +27,7 @@ enum class EGomokuItemType : uint8
 	// SealStone: empty cell -> Blocked (SetCellBlocked).
 	SealStone UMETA(DisplayName = "Seal Stone"),
 
-	// Pull: pull adjacent opponent stone toward target.
+	// Pull: move an adjacent allied stone into the selected empty target.
 	Pull UMETA(DisplayName = "Pull"),
 
 	// Steal: reassign opponent stone to current player, unless protected by GuardianBarrier.
@@ -58,13 +58,24 @@ struct FItemData
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gomoku|Item")
 	EItemTargetType TargetType = EItemTargetType::None;
 
+	/** Short effect explanation shown by the inventory card. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gomoku|Item")
+	FText Description;
+
+	/** Contextual instruction shown while choosing a target. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gomoku|Item")
+	FText TargetInstruction;
+
 	FItemData() = default;
 
-	FItemData(int32 InId, const FText& InName, int32 InCost, EItemTargetType InTarget)
+	FItemData(int32 InId, const FText& InName, int32 InCost, EItemTargetType InTarget,
+		const FText& InDescription, const FText& InTargetInstruction)
 		: Id(InId)
 		, DisplayName(InName)
 		, EnergyCost(InCost)
 		, TargetType(InTarget)
+		, Description(InDescription)
+		, TargetInstruction(InTargetInstruction)
 	{
 	}
 };

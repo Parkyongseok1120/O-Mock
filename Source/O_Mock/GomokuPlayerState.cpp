@@ -14,7 +14,11 @@ AGomokuPlayerState::AGomokuPlayerState()
 	PublicStatusEffects.Empty();
 	bAbandoned = false;
 	bReady = false;
+	bGomokuBot = false;
 	InventoryItemIds.Empty();
+	LockedInventoryItemIds.Empty();
+	bUsedItemThisTurn = false;
+	PendingInventoryItemId = 0;
 }
 
 void AGomokuPlayerState::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
@@ -28,7 +32,11 @@ void AGomokuPlayerState::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& O
 	DOREPLIFETIME(AGomokuPlayerState, PublicStatusEffects);
 	DOREPLIFETIME(AGomokuPlayerState, bAbandoned);
 	DOREPLIFETIME(AGomokuPlayerState, bReady);
+	DOREPLIFETIME(AGomokuPlayerState, bGomokuBot);
 	DOREPLIFETIME_CONDITION(AGomokuPlayerState, InventoryItemIds, COND_OwnerOnly);
+	DOREPLIFETIME_CONDITION(AGomokuPlayerState, LockedInventoryItemIds, COND_OwnerOnly);
+	DOREPLIFETIME_CONDITION(AGomokuPlayerState, bUsedItemThisTurn, COND_OwnerOnly);
+	DOREPLIFETIME_CONDITION(AGomokuPlayerState, PendingInventoryItemId, COND_OwnerOnly);
 }
 
 void AGomokuPlayerState::SetIdentity(int32 InId, const FLinearColor& InColor)
@@ -40,7 +48,8 @@ void AGomokuPlayerState::SetIdentity(int32 InId, const FLinearColor& InColor)
 }
 
 void AGomokuPlayerState::SetPublicMatchState(float InRemainingTime, int32 InEnergy,
-	const TArray<FName>& InEffects, bool bInAbandoned, const TArray<int32>& InInventoryItemIds)
+	const TArray<FName>& InEffects, bool bInAbandoned, const TArray<int32>& InInventoryItemIds,
+	const TArray<int32>& InLockedInventoryItemIds, bool bInUsedItemThisTurn, int32 InPendingInventoryItemId)
 {
 	if (!HasAuthority()) return;
 
@@ -49,6 +58,9 @@ void AGomokuPlayerState::SetPublicMatchState(float InRemainingTime, int32 InEner
 	PublicStatusEffects = InEffects;
 	bAbandoned = bInAbandoned;
 	InventoryItemIds = InInventoryItemIds;
+	LockedInventoryItemIds = InLockedInventoryItemIds;
+	bUsedItemThisTurn = bInUsedItemThisTurn;
+	PendingInventoryItemId = InPendingInventoryItemId;
 }
 
 void AGomokuPlayerState::SetReady(bool bInReady)
@@ -56,4 +68,12 @@ void AGomokuPlayerState::SetReady(bool bInReady)
 	if (!HasAuthority()) return;
 
 	bReady = bInReady;
+}
+
+void AGomokuPlayerState::SetGomokuBot(bool bInBot)
+{
+	if (!HasAuthority()) return;
+
+	bGomokuBot = bInBot;
+	SetIsABot(bInBot);
 }

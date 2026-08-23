@@ -3,7 +3,10 @@
 #include "GomokuGameState.h"
 #include "GomokuMatchEventLog.h"
 #include "GomokuItemLibrary.h"
+#include "GomokuBotLibrary.h"
 #include "GomokuPlayerState.h"
+#include "GomokuBalanceStatistics.h"
+#include "Engine/GameInstance.h"
 #include "Kismet/GameplayStatics.h"
 #include "GameFramework/PlayerController.h"
 #include "Net/UnrealNetwork.h"
@@ -45,6 +48,9 @@ void AGomokuGameState::InitializeForLocalHotseat(int32 MaxPlayers)
 	MiniGameCorrectPlayerIndices.Reset();
 	MiniGameInputPlayerIndex = INDEX_NONE;
 	CurrentPlayerIndex = -1;
+	ScheduledBotPlayerIndex = INDEX_NONE;
+	BotTurnReadyWorldSeconds = 0.0;
+	BotRandomStream.Initialize(FMath::Rand());
 
 	PlayerTimes.Reset();
 	PlayerColors.Reset();
@@ -69,6 +75,7 @@ void AGomokuGameState::InitializeForLocalHotseat(int32 MaxPlayers)
 	}
 
 	SyncReplicatedBoard();
+	BeginBalanceStatistics();
 	StartNewTurn();
 }
 
@@ -102,6 +109,12 @@ void AGomokuGameState::StartNewTurn()
 	}
 
 	const int32 NewPlayerId = CurrentPlayerIndex + 1;
+	if (EventLog)
+	{
+		EventLog->AppendEvent(EMatchEventType::TurnStarted, NewPlayerId,
+			CurrentRoundIndex, FIntPoint(-1, -1), NAME_None);
+		OnMatchEvent.Broadcast(EventLog->GetLastEvent());
+	}
 
 	// For previous player: clear turn item locks (promote gained->usable).
 	if (PreviousPlayerIndex >= 0)
@@ -113,32 +126,50 @@ void AGomokuGameState::StartNewTurn()
 	// For new player: reset used-item flag and ensure inventory.
 	RuleEngine->ResetUsedItemThisTurn(NewPlayerId);
 
-	if (RuleEngine.IsValid())
+	if (RuleEngine.IsValid() && bItemsEnabled)
 	{
-		const auto& PState = RuleEngine->GetPlayerStateData(NewPlayerId);
-		if (PState.ItemIds.Num() < 2)
+		FGomokuPlayerStateData PState = RuleEngine->GetPlayerStateData(NewPlayerId);
+		int32 GrantedItemId = 0;
+		if (PState.PendingInventoryItemId > 0 && PState.ItemIds.Num() < 2)
+		{
+			GrantedItemId = PState.PendingInventoryItemId;
+			RuleEngine->ClaimPendingInventoryItemIntoFreeSlot(NewPlayerId);
+		}
+		else if (PState.PendingInventoryItemId <= 0)
 		{
 			const int32 FirstCandidate = FMath::RandRange(1, 5);
 			for (int32 Offset = 0; Offset < 5; ++Offset)
 			{
 				const int32 NewItemId = ((FirstCandidate - 1 + Offset) % 5) + 1;
-				if (RuleEngine->AddItemToInventory(NewPlayerId, NewItemId))
+				if (PState.ItemIds.Num() < 2 && RuleEngine->AddItemToInventory(NewPlayerId, NewItemId))
 				{
 					RuleEngine->MarkItemGainedThisTurn(NewPlayerId, NewItemId);
+					GrantedItemId = NewItemId;
 					break;
 				}
+				if (PState.ItemIds.Num() >= 2 && RuleEngine->SetPendingInventoryItem(NewPlayerId, NewItemId))
+				{
+					break;
+				}
+			}
+		}
+		if (GrantedItemId > 0 && EventLog)
+		{
+			EventLog->AppendItemEvent(EMatchEventType::ItemGranted, NewPlayerId, INDEX_NONE,
+				FIntPoint(-1, -1), GrantedItemId, CurrentRoundIndex);
+			OnMatchEvent.Broadcast(EventLog->GetLastEvent());
+		}
+		if (GrantedItemId > 0)
+		{
+			if (UGomokuBalanceStatisticsSubsystem* Balance = GetBalanceStatistics())
+			{
+				Balance->RecordItemAcquired(GrantedItemId);
 			}
 		}
 
 		RuleEngine->AddPlayerEnergy(NewPlayerId, 1, UGomokuItemLibrary::MaxEnergy);
 	}
 	SyncPlayerStates();
-
-	if (EventLog)
-	{
-		EventLog->AppendEvent(EMatchEventType::TurnStarted, NewPlayerId, INDEX_NONE, FIntPoint(-1, -1), NAME_None);
-		OnMatchEvent.Broadcast(EventLog->GetLastEvent());
-	}
 
 	OnTurnChanged.Broadcast(CurrentPlayerIndex, CurrentRoundIndex);
 }
@@ -199,6 +230,9 @@ void AGomokuGameState::EndCurrentTurn(bool bForceEnd, bool bSkipCompletionTracki
 	if (bRoundCompleted)
 	{
 		RuleEngine->ExpireRoundEffects(CurrentRoundIndex);
+		// Temporary blocks and guardian barriers can expire without another move.
+		// Refresh their replicated presentation immediately at the round boundary.
+		SyncReplicatedBoard();
 		if (bHasTimeSystem)
 		{
 			ApplyEndOfRoundRecovery();
@@ -216,7 +250,7 @@ void AGomokuGameState::EndCurrentTurn(bool bForceEnd, bool bSkipCompletionTracki
 		RoundTurnCount = 0;
 		CurrentRoundIndex++;
 
-		if (CurrentRoundIndex > 1 && ((CurrentRoundIndex - 1) % 5) == 0 && !RuleEngine->IsGameOver())
+		if (bMiniGameEnabled && CurrentRoundIndex > 1 && ((CurrentRoundIndex - 1) % 5) == 0 && !RuleEngine->IsGameOver())
 		{
 			StartMiniGame();
 			return;
@@ -242,6 +276,13 @@ void AGomokuGameState::HandlePlaceStone(int32 PlayerIndex, const FIntPoint& Cell
 	}
 
 	const int32 PlayerId = 1 + PlayerIndex;
+	// A full-inventory offer is a server-authoritative modal decision.  Do not let
+	// board input (including a forged placement RPC) consume the turn before the
+	// player has selected which existing item to discard.
+	if (RuleEngine->GetPlayerStateData(PlayerId).PendingInventoryItemId > 0)
+	{
+		return;
+	}
 	const bool bValid = RuleEngine->TryPlaceStone(PlayerId, Cell.X, Cell.Y);
 	if (!bValid)
 	{
@@ -270,6 +311,7 @@ void AGomokuGameState::HandlePlaceStone(int32 PlayerIndex, const FIntPoint& Cell
 			OnMatchEvent.Broadcast(EventLog->GetLastEvent());
 		}
 		OnMatchEnded.Broadcast(Win);
+		FinalizeBalanceStatistics(PlayerIndex);
 		return;
 	}
 
@@ -281,24 +323,29 @@ void AGomokuGameState::HandlePlaceStone(int32 PlayerIndex, const FIntPoint& Cell
 		FGomokuWinResult DrawResult;
 		DrawResult.IsWin = false;
 		OnMatchEnded.Broadcast(DrawResult);
+		FinalizeBalanceStatistics(INDEX_NONE);
 		return;
 	}
 
 	EndCurrentTurn(false);
 }
 
-void AGomokuGameState::HandleUseItem(int32 PlayerIndex, int32 ItemId, const FIntPoint& TargetCell, int32 TargetPlayerIndex)
+bool AGomokuGameState::HandleUseItem(int32 PlayerIndex, int32 ItemId, const FIntPoint& TargetCell, int32 TargetPlayerIndex)
 {
-	if (!HasAuthority() || !IsGameActive || !RuleEngine.IsValid() || MatchPhase != EMatchPhase::Playing)
+	if (!HasAuthority() || !bItemsEnabled || !IsGameActive || !RuleEngine.IsValid() || MatchPhase != EMatchPhase::Playing)
 	{
-		return;
+		return false;
 	}
 	if (PlayerIndex != CurrentPlayerIndex || ItemId <= 0)
 	{
-		return;
+		return false;
 	}
 
 	const int32 PlayerId = PlayerIndex + 1;
+	if (RuleEngine->GetPlayerStateData(PlayerId).PendingInventoryItemId > 0)
+	{
+		return false;
+	}
 	if (ItemId == 4 && TargetPlayerIndex < 0)
 	{
 		const TArray<int32>& ActiveIndices = RuleEngine->GetActivePlayerIndices();
@@ -312,7 +359,7 @@ void AGomokuGameState::HandleUseItem(int32 PlayerIndex, int32 ItemId, const FInt
 	if (!UGomokuItemLibrary::CanUseItem(RuleEngine.Get(), PlayerId, ItemId) ||
 		!UGomokuItemLibrary::ValidateTargetForPlayer(RuleEngine.Get(), PlayerId, ItemId, TargetCell, TargetPlayerIndex))
 	{
-		return;
+		return false;
 	}
 
 	int32 TargetPlayerId = INDEX_NONE;
@@ -326,7 +373,7 @@ void AGomokuGameState::HandleUseItem(int32 PlayerIndex, int32 ItemId, const FInt
 	RuleEngine->SetLastItemWinResult(FGomokuWinResult());
 	if (!UGomokuItemLibrary::ExecuteItem(RuleEngine.Get(), ItemId, PlayerId, TargetCell, TargetPlayerIndex, CurrentRoundIndex))
 	{
-		return;
+		return false;
 	}
 
 	SyncReplicatedBoard();
@@ -340,6 +387,14 @@ void AGomokuGameState::HandleUseItem(int32 PlayerIndex, int32 ItemId, const FInt
 		{
 			EventLog->AppendItemEvent(EMatchEventType::TurnSkipped, PlayerId, TargetPlayerId, TargetCell, ItemId, CurrentRoundIndex);
 			OnMatchEvent.Broadcast(EventLog->GetLastEvent());
+		}
+	}
+	if (UGomokuBalanceStatisticsSubsystem* Balance = GetBalanceStatistics())
+	{
+		Balance->RecordItemUsed(ItemId);
+		if (ItemId == 4)
+		{
+			Balance->RecordSkipUse();
 		}
 	}
 
@@ -356,7 +411,45 @@ void AGomokuGameState::HandleUseItem(int32 PlayerIndex, int32 ItemId, const FInt
 			OnMatchEvent.Broadcast(EventLog->GetLastEvent());
 		}
 		OnMatchEnded.Broadcast(ItemWin);
+		FinalizeBalanceStatistics(ItemWin.WinnerPlayerIndex);
 	}
+
+	UE_LOG(LogGomokuMatchFlow, Display,
+		TEXT("Item used: player=%d item=%d target=(%d,%d) targetPlayer=%d energy=%d inventory=%d"),
+		PlayerId, ItemId, TargetCell.X, TargetCell.Y, TargetPlayerId,
+		RuleEngine->GetPlayerStateData(PlayerId).Energy,
+		RuleEngine->GetPlayerStateData(PlayerId).ItemIds.Num());
+	return true;
+}
+
+bool AGomokuGameState::HandleReplacePendingInventoryItem(int32 PlayerIndex, int32 DiscardItemId)
+{
+	if (!HasAuthority() || !bItemsEnabled || !IsGameActive || !RuleEngine.IsValid()
+		|| MatchPhase != EMatchPhase::Playing || PlayerIndex != CurrentPlayerIndex || DiscardItemId <= 0)
+	{
+		return false;
+	}
+	const int32 PlayerId = PlayerIndex + 1;
+	const int32 PendingItemId = RuleEngine->GetPlayerStateData(PlayerId).PendingInventoryItemId;
+	if (PendingItemId <= 0 || !RuleEngine->ReplaceInventoryItemWithPending(PlayerId, DiscardItemId))
+	{
+		return false;
+	}
+	SyncPlayerStates();
+	if (EventLog)
+	{
+		EventLog->AppendItemEvent(EMatchEventType::ItemDiscarded, PlayerId, INDEX_NONE,
+			FIntPoint(-1, -1), DiscardItemId, CurrentRoundIndex);
+		OnMatchEvent.Broadcast(EventLog->GetLastEvent());
+		EventLog->AppendItemEvent(EMatchEventType::ItemGranted, PlayerId, INDEX_NONE,
+			FIntPoint(-1, -1), PendingItemId, CurrentRoundIndex);
+		OnMatchEvent.Broadcast(EventLog->GetLastEvent());
+	}
+	if (UGomokuBalanceStatisticsSubsystem* Balance = GetBalanceStatistics())
+	{
+		Balance->RecordItemAcquired(PendingItemId);
+	}
+	return true;
 }
 
 void AGomokuGameState::TickTimeSystem(float DeltaSeconds)
@@ -408,6 +501,31 @@ void AGomokuGameState::AutoMoveOnTimeout()
 	if (!IsGameActive || !RuleEngine.IsValid())
 	{
 		return;
+	}
+	if (UGomokuBalanceStatisticsSubsystem* Balance = GetBalanceStatistics())
+	{
+		Balance->RecordTimeout();
+	}
+	if (EventLog)
+	{
+		EventLog->AppendEvent(EMatchEventType::TurnTimedOut, CurrentPlayerIndex + 1,
+			CurrentRoundIndex, FIntPoint(-1, -1), NAME_None);
+		OnMatchEvent.Broadcast(EventLog->GetLastEvent());
+	}
+
+	// A player normally chooses the discarded slot.  On timeout, resolve the
+	// modal offer deterministically so an unattended client cannot stall the
+	// match forever, then continue with the normal server auto-move.
+	const int32 TimedOutPlayerId = CurrentPlayerIndex + 1;
+	const FGomokuPlayerStateData TimedOutPlayer = RuleEngine->GetPlayerStateData(TimedOutPlayerId);
+	if (TimedOutPlayer.PendingInventoryItemId > 0)
+	{
+		if (TimedOutPlayer.ItemIds.IsEmpty()
+			|| !HandleReplacePendingInventoryItem(CurrentPlayerIndex, TimedOutPlayer.ItemIds[0]))
+		{
+			EndCurrentTurn(true);
+			return;
+		}
 	}
 
 	TArray<FIntPoint> Candidates;
@@ -462,6 +580,10 @@ void AGomokuGameState::RestartMatch()
 	{
 		return;
 	}
+	if (UGomokuBalanceStatisticsSubsystem* Balance = GetBalanceStatistics())
+	{
+		Balance->CancelActiveMatch();
+	}
 
 	RuleEngine->InitializeMatch(RuleEngine->GetMatchConfig());
 	CurrentRoundIndex = 1;
@@ -497,6 +619,7 @@ void AGomokuGameState::RestartMatch()
 	}
 
 	SyncReplicatedBoard();
+	BeginBalanceStatistics();
 	StartNewTurn();
 	OnMatchRestarted.Broadcast();
 }
@@ -515,6 +638,10 @@ void AGomokuGameState::RequestAbandonPlayer(int32 PlayerId)
 
 	const int32 AbandoningPlayerIndex = PlayerId - 1;
 	const int32 Remaining = RuleEngine->AbandonPlayer(PlayerId);
+	if (UGomokuBalanceStatisticsSubsystem* Balance = GetBalanceStatistics())
+	{
+		Balance->RecordAbandon();
+	}
 
 	if (EventLog)
 	{
@@ -536,6 +663,7 @@ void AGomokuGameState::RequestAbandonPlayer(int32 PlayerId)
 			WinResult.IsWin = true;
 			WinResult.WinnerPlayerIndex = SoleIndex;
 			OnMatchEnded.Broadcast(WinResult);
+			FinalizeBalanceStatistics(SoleIndex);
 			return;
 		}
 	}
@@ -564,12 +692,16 @@ void AGomokuGameState::RequestAbandonPlayer(int32 PlayerId)
 
 void AGomokuGameState::StartMiniGame()
 {
-	if (!HasAuthority() || !IsGameActive || !RuleEngine.IsValid() || MatchPhase != EMatchPhase::Playing)
+	if (!HasAuthority() || !bMiniGameEnabled || !IsGameActive || !RuleEngine.IsValid() || MatchPhase != EMatchPhase::Playing)
 	{
 		return;
 	}
 
 	bMiniGameActive = true;
+	if (UGomokuBalanceStatisticsSubsystem* Balance = GetBalanceStatistics())
+	{
+		Balance->RecordMiniGameStarted();
+	}
 	MiniGameRemainingTime = 8.0f;
 	MiniGameResultRemainingTime = 0.0f;
 	MiniGameAnswerCell = FIntPoint(5, 3);
@@ -622,6 +754,13 @@ bool AGomokuGameState::SubmitMiniGameAnswer(int32 PlayerIndex, const FIntPoint& 
 		MiniGameCorrectPlayerIndices.Add(PlayerIndex);
 		const int32 Reward = FMath::Max(1, 3 - CorrectRank);
 		RuleEngine->AddPlayerEnergy(PlayerIndex + 1, Reward, UGomokuItemLibrary::MaxEnergy);
+		if (CorrectRank == 0)
+		{
+			if (UGomokuBalanceStatisticsSubsystem* Balance = GetBalanceStatistics())
+			{
+				Balance->RecordMiniGameWinner(PlayerIndex + 1);
+			}
+		}
 	}
 	SyncPlayerStates();
 
@@ -741,6 +880,7 @@ void AGomokuGameState::SyncReplicatedBoard()
 	ReplicatedBoardSizeX = Cfg.BoardSizeX;
 	ReplicatedBoardSizeY = Cfg.BoardSizeY;
 	ReplicatedBoardCells.Reset();
+	ReplicatedGuardianCells = RuleEngine->GetGuardianProtectedCells();
 	ReplicatedBoardCells.Reserve(Cfg.BoardSizeX * Cfg.BoardSizeY);
 	for (int32 Y = 0; Y < Cfg.BoardSizeY; ++Y)
 	{
@@ -774,9 +914,107 @@ void AGomokuGameState::SyncPlayerStates()
 		{
 			RemainingTime = PlayerTimes[PlayerIndex].PersonalRemaining;
 		}
+		TArray<int32> LockedItemIds = Data.ItemIdsGainedThisTurn.Array();
+		LockedItemIds.Sort();
 		PlayerState->SetPublicMatchState(RemainingTime, Data.Energy, PlayerState->PublicStatusEffects,
-			Data.bHasAbandoned, Data.ItemIds);
+			Data.bHasAbandoned, Data.ItemIds, LockedItemIds, Data.bUsedItemThisTurn, Data.PendingInventoryItemId);
 	}
+}
+
+const AGomokuPlayerState* AGomokuGameState::FindGomokuPlayerState(int32 PlayerId) const
+{
+	for (APlayerState* ExistingState : PlayerArray)
+	{
+		const AGomokuPlayerState* PlayerState = Cast<AGomokuPlayerState>(ExistingState);
+		if (PlayerState && PlayerState->GomokuPlayerId == PlayerId)
+		{
+			return PlayerState;
+		}
+	}
+	return nullptr;
+}
+
+bool AGomokuGameState::TickBotTurn(bool bIgnoreThinkDelay)
+{
+	if (!HasAuthority() || !IsGameActive || MatchPhase != EMatchPhase::Playing
+		|| !RuleEngine.IsValid() || CurrentPlayerIndex < 0)
+	{
+		ScheduledBotPlayerIndex = INDEX_NONE;
+		return false;
+	}
+
+	const int32 PlayerId = CurrentPlayerIndex + 1;
+	const AGomokuPlayerState* PlayerState = FindGomokuPlayerState(PlayerId);
+	if (!PlayerState || !PlayerState->bGomokuBot)
+	{
+		ScheduledBotPlayerIndex = INDEX_NONE;
+		return false;
+	}
+
+	const double WorldSeconds = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0;
+	if (ScheduledBotPlayerIndex != CurrentPlayerIndex)
+	{
+		ScheduledBotPlayerIndex = CurrentPlayerIndex;
+		BotTurnReadyWorldSeconds = WorldSeconds + FMath::Clamp(BotThinkDelaySeconds, 0.1f, 5.0f);
+		if (!bIgnoreThinkDelay)
+		{
+			return true;
+		}
+	}
+	if (!bIgnoreThinkDelay && WorldSeconds < BotTurnReadyWorldSeconds)
+	{
+		return true;
+	}
+
+	// Clear before acting. A successful placement advances to another seat; a failed
+	// choice is scheduled again instead of executing every frame.
+	ScheduledBotPlayerIndex = INDEX_NONE;
+	FGomokuPlayerStateData BotData = RuleEngine->GetPlayerStateData(PlayerId);
+	if (BotData.PendingInventoryItemId > 0)
+	{
+		// Preserve the tactically stronger IDs when possible. This is deterministic so
+		// a full inventory can never leave a server-controlled seat modal-blocked.
+		static const int32 DiscardPriority[] = { 1, 5, 4, 2, 3 };
+		int32 DiscardItemId = 0;
+		for (const int32 Candidate : DiscardPriority)
+		{
+			if (BotData.ItemIds.Contains(Candidate))
+			{
+				DiscardItemId = Candidate;
+				break;
+			}
+		}
+		if (DiscardItemId <= 0 && !BotData.ItemIds.IsEmpty())
+		{
+			DiscardItemId = BotData.ItemIds[0];
+		}
+		if (DiscardItemId > 0)
+		{
+			HandleReplacePendingInventoryItem(CurrentPlayerIndex, DiscardItemId);
+		}
+	}
+
+	if (bItemsEnabled && IsGameActive)
+	{
+		FGomokuBotItemAction ItemAction;
+		if (UGomokuBotLibrary::ChooseItemAction(RuleEngine.Get(), PlayerId,
+			BotItemUseProbability, BotRandomStream, ItemAction))
+		{
+			HandleUseItem(CurrentPlayerIndex, ItemAction.ItemId,
+				ItemAction.TargetCell, ItemAction.TargetPlayerIndex);
+		}
+	}
+	if (!IsGameActive || MatchPhase != EMatchPhase::Playing)
+	{
+		return true;
+	}
+
+	FIntPoint Move(-1, -1);
+	if (UGomokuBotLibrary::ChooseMove(RuleEngine.Get(), PlayerId, Move))
+	{
+		HandlePlaceStone(CurrentPlayerIndex, Move);
+	}
+	return true;
 }
 
 int32 AGomokuGameState::GetNextMinigameRound() const
@@ -794,6 +1032,36 @@ int32 AGomokuGameState::GetNumActivePlayers() const
 		return RuleEngine->GetActivePlayerIndices().Num();
 	}
 	return LocalPlayerCount;
+}
+
+UGomokuBalanceStatisticsSubsystem* AGomokuGameState::GetBalanceStatistics() const
+{
+	const UGameInstance* GameInstance = GetGameInstance();
+	return GameInstance ? GameInstance->GetSubsystem<UGomokuBalanceStatisticsSubsystem>() : nullptr;
+}
+
+void AGomokuGameState::BeginBalanceStatistics()
+{
+	if (!HasAuthority() || !RuleEngine.IsValid())
+	{
+		return;
+	}
+	if (UGomokuBalanceStatisticsSubsystem* Balance = GetBalanceStatistics())
+	{
+		Balance->BeginMatch(RuleEngine->GetMatchConfig(), bItemsEnabled, bMiniGameEnabled);
+	}
+}
+
+void AGomokuGameState::FinalizeBalanceStatistics(int32 WinnerIndex)
+{
+	if (!HasAuthority())
+	{
+		return;
+	}
+	if (UGomokuBalanceStatisticsSubsystem* Balance = GetBalanceStatistics())
+	{
+		Balance->CompleteMatch(WinnerIndex, FMath::Max(0, CurrentRoundIndex - 1));
+	}
 }
 
 void AGomokuGameState::BeginPlay()
@@ -846,6 +1114,10 @@ void AGomokuGameState::Tick(float DeltaTime)
 		}
 		return;
 	}
+	if (TickBotTurn())
+	{
+		return;
+	}
 	TickTimeSystem(SimulationStep);
 }
 
@@ -876,6 +1148,14 @@ void AGomokuGameState::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& Out
 	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
 
 	DOREPLIFETIME(AGomokuGameState, LocalPlayerCount);
+	DOREPLIFETIME(AGomokuGameState, LobbyMaxPlayers);
+	DOREPLIFETIME(AGomokuGameState, LobbyBotCount);
+	DOREPLIFETIME(AGomokuGameState, LobbyBoardSize);
+	DOREPLIFETIME(AGomokuGameState, bItemsEnabled);
+	DOREPLIFETIME(AGomokuGameState, bMiniGameEnabled);
+	DOREPLIFETIME(AGomokuGameState, bLobbyPasswordProtected);
+	DOREPLIFETIME(AGomokuGameState, MaxPersonalTime);
+	DOREPLIFETIME(AGomokuGameState, MaxTurnTime);
 	DOREPLIFETIME(AGomokuGameState, CurrentRoundIndex);
 	DOREPLIFETIME(AGomokuGameState, RoundTurnCount);
 	DOREPLIFETIME(AGomokuGameState, CurrentPlayerIndex);
@@ -897,6 +1177,7 @@ void AGomokuGameState::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& Out
 	DOREPLIFETIME(AGomokuGameState, ReplicatedBoardSizeX);
 	DOREPLIFETIME(AGomokuGameState, ReplicatedBoardSizeY);
 	DOREPLIFETIME(AGomokuGameState, ReplicatedBoardCells);
+	DOREPLIFETIME(AGomokuGameState, ReplicatedGuardianCells);
 }
 
 void AGomokuGameState::OnRep_TurnState()
@@ -974,6 +1255,11 @@ void AGomokuGameState::OnRep_ReplicatedBoardCells(const TArray<ECellState>& Prev
 		OnMatchRestarted.Broadcast();
 	}
 
+	OnReplicatedBoardChanged.Broadcast();
+}
+
+void AGomokuGameState::OnRep_GuardianCells()
+{
 	OnReplicatedBoardChanged.Broadcast();
 }
 

@@ -7,6 +7,7 @@
 #include "GomokuHUDWidget.generated.h"
 
 class UBorder;
+class UButton;
 class UImage;
 class UTextBlock;
 class UTexture2D;
@@ -31,7 +32,21 @@ protected:
 private:
 	void CachePresentationWidgets();
 	void RefreshPresentation();
-	void ResolveLocalInventory(TArray<int32>& OutItemIds, int32& OutEnergy) const;
+	void ResolveLocalInventory(TArray<int32>& OutItemIds, int32& OutEnergy,
+		TArray<int32>& OutLockedItemIds, bool& bOutUsedItemThisTurn, int32& OutPendingItemId) const;
+	void SelectDisplayedInventorySlot(int32 SlotIndex);
+
+	UFUNCTION()
+	void HandleInventorySlot1Clicked();
+
+	UFUNCTION()
+	void HandleInventorySlot2Clicked();
+
+	UFUNCTION()
+	void HandleLobbyReadyClicked();
+
+	UFUNCTION()
+	void HandleLobbyStartClicked();
 
 	UPROPERTY(Transient, meta = (BindWidget))
 	TObjectPtr<UImage> TopPanelImage;
@@ -76,7 +91,58 @@ private:
 	TObjectPtr<UTextBlock> InventoryText;
 
 	UPROPERTY(Transient, meta = (BindWidget))
+	TObjectPtr<UButton> InventorySlotButton1;
+
+	UPROPERTY(Transient, meta = (BindWidget))
+	TObjectPtr<UButton> InventorySlotButton2;
+
+	UPROPERTY(Transient, meta = (BindWidget))
+	TObjectPtr<UTextBlock> InventorySlotText1;
+
+	UPROPERTY(Transient, meta = (BindWidget))
+	TObjectPtr<UTextBlock> InventorySlotText2;
+
+	UPROPERTY(Transient, meta = (BindWidget))
+	TObjectPtr<UTextBlock> ItemStatusText;
+
+	UPROPERTY(Transient, meta = (BindWidget))
+	TObjectPtr<UBorder> InventoryOfferPanel;
+
+	UPROPERTY(Transient, meta = (BindWidget))
+	TObjectPtr<UTextBlock> InventoryOfferText;
+
+	UPROPERTY(Transient, meta = (BindWidget))
+	TObjectPtr<UBorder> LobbyPanel;
+
+	UPROPERTY(Transient, meta = (BindWidget))
+	TObjectPtr<UTextBlock> LobbyStatusText;
+
+	UPROPERTY(Transient, meta = (BindWidget))
+	TObjectPtr<UButton> LobbyReadyButton;
+
+	UPROPERTY(Transient, meta = (BindWidget))
+	TObjectPtr<UTextBlock> LobbyReadyButtonText;
+
+	UPROPERTY(Transient, meta = (BindWidget))
+	TObjectPtr<UButton> LobbyStartButton;
+
+	UPROPERTY(Transient, meta = (BindWidget))
+	TObjectPtr<UTextBlock> LobbyStartButtonText;
+
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<UButton>> InventorySlotButtons;
+
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<UTextBlock>> InventorySlotTexts;
+
+	TArray<int32> DisplayedInventoryItemIds;
+	int32 DisplayedPendingInventoryItemId = 0;
+
+	UPROPERTY(Transient, meta = (BindWidget))
 	TObjectPtr<UTextBlock> HelpText;
+
+	UPROPERTY(Transient, meta = (BindWidget))
+	TObjectPtr<UTextBlock> PreviewLegendText;
 
 	UPROPERTY(Transient, meta = (BindWidget))
 	TObjectPtr<UBorder> GameOverPanel;

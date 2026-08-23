@@ -38,6 +38,9 @@ static AGomokuGameState* MakeStage2GameState(UWorld*& OutWorld)
 	}
 
 	GameState->SetRuleEngineRef(MakeStage2Engine());
+	// These tests isolate base turn/win behavior; inventory-modal behavior is
+	// covered by the Stage 8 server-authority tests.
+	GameState->bItemsEnabled = false;
 	GameState->InitializeForLocalHotseat(2);
 	return GameState;
 }

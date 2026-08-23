@@ -15,6 +15,9 @@ public class O_Mock : ModuleRules
 			"Engine",
 			"InputCore",
 			"EnhancedInput",
+			"OnlineSubsystem",
+			"OnlineSubsystemUtils",
+			"Json",
 			"UMG",
 			"Slate",
 			"SlateCore"

@@ -55,7 +55,7 @@ bool FGomokuStage6_ItemTypesExist::RunTest(const FString& Parameters)
 
 	FItemData SealData;
 	if (!TestTrue(TEXT("Shared item metadata resolves Seal"), UGomokuItemLibrary::GetItemData(SealStoneId, SealData))
-		|| !TestEqual(TEXT("Seal metadata name"), SealData.DisplayName.ToString(), FString(TEXT("Seal")))
+		|| !TestEqual(TEXT("Seal metadata name"), SealData.DisplayName.ToString(), FString(TEXT("Seal Stone")))
 		|| !TestEqual(TEXT("Seal metadata energy cost"), SealData.EnergyCost, 1)
 		|| !TestEqual(TEXT("Seal metadata target"), SealData.TargetType, EItemTargetType::Cell))
 	{
@@ -178,13 +178,14 @@ bool FGomokuStage6_SelectCancelTargeting::RunTest(const FString& Parameters)
 		return false;
 	}
 
-	PC->SelectItem(TestItemId);
-
-	if (!TestTrue(TEXT("bItemTargetingActive after SelectItem"), PC->bItemTargetingActive))
+	if (!TestFalse(TEXT("SelectItem rejects an inactive world"), PC->SelectItem(TestItemId)))
+		return false;
+	if (!TestFalse(TEXT("Rejected selection does not activate targeting"), PC->bItemTargetingActive))
 		return false;
 
-	if (!TestEqual<int32>(TEXT("SelectedItemId after SelectItem"), PC->SelectedItemId, TestItemId))
-		return false;
+	// Cancel remains a safe, idempotent public escape path for an active selection.
+	PC->bItemTargetingActive = true;
+	PC->SelectedItemId = TestItemId;
 
 	PC->CancelItemTargeting();
 
@@ -199,6 +200,49 @@ bool FGomokuStage6_SelectCancelTargeting::RunTest(const FString& Parameters)
 
 	World->DestroyWorld(false);
 	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FGomokuStage6_FullInventoryReplacementIsAtomic,
+	TEXT("Gomoku.Stage6.FullInventoryReplacementIsAtomic"),
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FGomokuStage6_FullInventoryReplacementIsAtomic::RunTest(const FString& Parameters)
+{
+	UGomokuRuleEngine* Engine = MakeStage6Engine(2, 15);
+	if (!TestTrue(TEXT("First stored item"), Engine->AddItemToInventory(1, 1))
+		|| !TestTrue(TEXT("Second stored item"), Engine->AddItemToInventory(1, 2))
+		|| !TestTrue(TEXT("Full inventory accepts a distinct pending offer"), Engine->SetPendingInventoryItem(1, 3))
+		|| !TestFalse(TEXT("Cannot replace a non-owned slot"), Engine->ReplaceInventoryItemWithPending(1, 4)))
+	{
+		return false;
+	}
+	FGomokuPlayerStateData Before = Engine->GetPlayerStateData(1);
+	if (!TestTrue(TEXT("Failed replacement leaves first item intact"), Before.ItemIds.Contains(1))
+		|| !TestEqual(TEXT("Failed replacement leaves offer intact"), Before.PendingInventoryItemId, 3)
+		|| !TestTrue(TEXT("Chosen slot is atomically replaced"), Engine->ReplaceInventoryItemWithPending(1, 1)))
+	{
+		return false;
+	}
+	FGomokuPlayerStateData After = Engine->GetPlayerStateData(1);
+	if (!TestFalse(TEXT("Discarded item is gone"), After.ItemIds.Contains(1))
+		|| !TestTrue(TEXT("Unselected item remains"), After.ItemIds.Contains(2))
+		|| !TestTrue(TEXT("Offered item is stored"), After.ItemIds.Contains(3))
+		|| !TestEqual(TEXT("Offer is cleared"), After.PendingInventoryItemId, 0)
+		|| !TestTrue(TEXT("Replacement unlocks on next turn"), After.ItemIdsGainedThisTurn.Contains(3)))
+	{
+		return false;
+	}
+	Engine->ClearTurnItemLocksForPlayer(1);
+	if (!TestTrue(TEXT("Second offer created"), Engine->SetPendingInventoryItem(1, 4))
+		|| !TestTrue(TEXT("A slot can be freed"), Engine->RemoveItemFromInventory(1, 2))
+		|| !TestTrue(TEXT("Pending offer claims a newly free slot"), Engine->ClaimPendingInventoryItemIntoFreeSlot(1)))
+	{
+		return false;
+	}
+	After = Engine->GetPlayerStateData(1);
+	return TestTrue(TEXT("Claimed offer is present"), After.ItemIds.Contains(4))
+		&& TestEqual(TEXT("Claim clears pending state"), After.PendingInventoryItemId, 0);
 }
 
 #endif // WITH_DEV_AUTOMATION_TESTS

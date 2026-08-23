@@ -39,10 +39,10 @@ class O_MOCK_API AGomokuGameState : public AGameStateBase
 public:
 	AGomokuGameState();
 
-	UPROPERTY(EditDefaultsOnly, BlueprintReadWrite, Category = "Time")
+	UPROPERTY(Replicated, EditDefaultsOnly, BlueprintReadWrite, Category = "Time")
 	float MaxPersonalTime = 120.0f;
 
-	UPROPERTY(EditDefaultsOnly, BlueprintReadWrite, Category = "Time")
+	UPROPERTY(Replicated, EditDefaultsOnly, BlueprintReadWrite, Category = "Time")
 	float MaxTurnTime = 25.0f;
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadWrite, Category = "Time")
@@ -50,6 +50,32 @@ public:
 
 	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Gomoku|Match")
 	int32 LocalPlayerCount = 2;
+
+	/** Advertised lobby capacity selected by the host (2-4). */
+	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Gomoku|Match")
+	int32 LobbyMaxPlayers = 4;
+
+	/** Bots planned by the host. Humans take priority over these seats until match start. */
+	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Gomoku|Bot")
+	int32 LobbyBotCount = 0;
+
+	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Gomoku|Match")
+	int32 LobbyBoardSize = 15;
+
+	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Gomoku|Match")
+	bool bItemsEnabled = true;
+
+	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Gomoku|Match")
+	bool bMiniGameEnabled = true;
+
+	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Gomoku|Match")
+	bool bLobbyPasswordProtected = false;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadWrite, Category = "Gomoku|Bot", meta = (ClampMin = 0.0, ClampMax = 1.0))
+	float BotItemUseProbability = 0.35f;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadWrite, Category = "Gomoku|Bot", meta = (ClampMin = 0.1, ClampMax = 5.0))
+	float BotThinkDelaySeconds = 0.8f;
 
 	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Gomoku|Turn")
 	int32 CurrentRoundIndex = 0;
@@ -113,6 +139,10 @@ public:
 	UPROPERTY(ReplicatedUsing=OnRep_ReplicatedBoardCells, BlueprintReadOnly, Category = "Gomoku|Board")
 	TArray<ECellState> ReplicatedBoardCells;
 
+	/** Public guarded-cell presentation state; item ownership remains owner-only. */
+	UPROPERTY(ReplicatedUsing=OnRep_GuardianCells, BlueprintReadOnly, Category = "Gomoku|Board")
+	TArray<FIntPoint> ReplicatedGuardianCells;
+
 	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Gomoku|Board")
 	int32 ReplicatedBoardSizeX = 0;
 
@@ -154,7 +184,11 @@ public:
 
 	/** Server-side item execution entry point. PlayerIndex is resolved from the requesting controller on network paths. */
 	UFUNCTION(BlueprintCallable, Category = "Gomoku|Items")
-	void HandleUseItem(int32 PlayerIndex, int32 ItemId, const FIntPoint& TargetCell, int32 TargetPlayerIndex = -1);
+	bool HandleUseItem(int32 PlayerIndex, int32 ItemId, const FIntPoint& TargetCell, int32 TargetPlayerIndex = -1);
+
+	/** Server-authoritative response to a full-inventory replacement offer. */
+	UFUNCTION(BlueprintCallable, Category = "Gomoku|Items")
+	bool HandleReplacePendingInventoryItem(int32 PlayerIndex, int32 DiscardItemId);
 
 	UFUNCTION(BlueprintCallable, Category = "Time")
 	void SetHoveredCell(const FIntPoint& InCell);
@@ -200,6 +234,9 @@ public:
 	void SyncReplicatedBoard();
 	void SyncPlayerStates();
 
+	/** Server-only bot runtime entry. Tests may bypass the presentation delay. */
+	bool TickBotTurn(bool bIgnoreThinkDelay = false);
+
 	// Exposed for Stage 3 time-system tests.
 	UFUNCTION(BlueprintCallable, Category = "Gomoku|Time")
 	void TickTimeSystem(float DeltaSeconds);
@@ -213,6 +250,9 @@ protected:
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 
 private:
+	class UGomokuBalanceStatisticsSubsystem* GetBalanceStatistics() const;
+	void BeginBalanceStatistics();
+	void FinalizeBalanceStatistics(int32 WinnerIndex);
 	TWeakObjectPtr<UGomokuRuleEngine> RuleEngine;
 	FIntPoint MiniGameAnswerCell = FIntPoint(-1, -1);
 
@@ -220,6 +260,7 @@ private:
 	// bSkipCompletionTracking: when true, do not count current player as completed for this round (used by abandon).
 	void EndCurrentTurn(bool bForceEnd, bool bSkipCompletionTracking = false);
 	void AutoMoveOnTimeout();
+	const class AGomokuPlayerState* FindGomokuPlayerState(int32 PlayerId) const;
 	void TickMiniGame(float DeltaSeconds);
 	int32 FindNextMiniGameInputPlayer(int32 AfterPlayerIndex) const;
 
@@ -237,5 +278,12 @@ private:
 	void OnRep_ReplicatedBoardCells(const TArray<ECellState>& PreviousCells);
 
 	UFUNCTION()
+	void OnRep_GuardianCells();
+
+	UFUNCTION()
 	void OnRep_MatchPresentation();
+
+	int32 ScheduledBotPlayerIndex = INDEX_NONE;
+	double BotTurnReadyWorldSeconds = 0.0;
+	FRandomStream BotRandomStream;
 };

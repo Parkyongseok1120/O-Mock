@@ -6,12 +6,15 @@
 #include "GomokuBoardActor.h"
 #include "GomokuGameState.h"
 #include "GomokuGameMode.h"
+#include "GomokuItemLibrary.h"
 #include "GomokuPlayerState.h"
 #include "EngineUtils.h"
 
 AGomokuPlayerController::AGomokuPlayerController()
 {
 	bShowMouseCursor = true;
+	bEnableClickEvents = true;
+	bEnableMouseOverEvents = true;
 }
 
 void AGomokuPlayerController::BeginPlay()
@@ -21,8 +24,20 @@ void AGomokuPlayerController::BeginPlay()
 	if (UWorld* World = GetWorld())
 	{
 		GomokuGSState = Cast<AGomokuGameState>(World->GetGameState());
+		if (GomokuGSState)
+		{
+			LastObservedTurnIndex = GomokuGSState->CurrentPlayerIndex;
+			LastObservedMatchPhase = GomokuGSState->MatchPhase;
+		}
 	}
 	ResolveBoardActor();
+	if (IsLocalController())
+	{
+		FInputModeGameAndUI InputMode;
+		InputMode.SetHideCursorDuringCapture(false);
+		InputMode.SetLockMouseToViewportBehavior(EMouseLockMode::DoNotLock);
+		SetInputMode(InputMode);
+	}
 }
 
 void AGomokuPlayerController::SetupInputComponent()
@@ -70,6 +85,18 @@ void AGomokuPlayerController::PlayerTick(float DeltaTime)
 	if (!IsLocalController())
 	{
 		return;
+	}
+	if (GomokuGSState && (LastObservedTurnIndex != GomokuGSState->CurrentPlayerIndex
+		|| LastObservedMatchPhase != GomokuGSState->MatchPhase))
+	{
+		if (bItemTargetingActive)
+		{
+			ClearItemSelection();
+			bItemUseRequestPending = false;
+			SetItemFeedback(TEXT("Item selection cleared because the turn or phase changed."), false);
+		}
+		LastObservedTurnIndex = GomokuGSState->CurrentPlayerIndex;
+		LastObservedMatchPhase = GomokuGSState->MatchPhase;
 	}
 	if (BoardActor && IsInputKeyDown(EKeys::RightMouseButton))
 	{
@@ -163,21 +190,120 @@ void AGomokuPlayerController::Server_RequestUseItem_Implementation(int32 ItemId,
 {
 	if (!HasAuthority() || !GetWorld())
 	{
+		Client_NotifyItemUseResult(false, ItemId, false);
 		return;
 	}
 
 	AGomokuGameState* GS = Cast<AGomokuGameState>(GetWorld()->GetGameState());
 	if (!GS)
 	{
+		Client_NotifyItemUseResult(false, ItemId, false);
 		return;
 	}
 
 	const int32 RequestingPlayerIndex = ResolveNetworkPlayerIndex();
 	if (RequestingPlayerIndex == INDEX_NONE)
 	{
+		Client_NotifyItemUseResult(false, ItemId, false);
 		return;
 	}
-	GS->HandleUseItem(RequestingPlayerIndex, ItemId, TargetCell, TargetPlayerIndex);
+	const bool bSuccess = GS->HandleUseItem(RequestingPlayerIndex, ItemId, TargetCell, TargetPlayerIndex);
+	FItemData ItemData;
+	const bool bIsCellTarget = UGomokuItemLibrary::GetItemData(ItemId, ItemData)
+		&& ItemData.TargetType == EItemTargetType::Cell;
+	const bool bCanRetryTarget = !bSuccess && bIsCellTarget
+		&& GS->MatchPhase == EMatchPhase::Playing
+		&& GS->CurrentPlayerIndex == RequestingPlayerIndex
+		&& UGomokuItemLibrary::CanUseItem(GS->GetRuleEngine(), RequestingPlayerIndex + 1, ItemId);
+	Client_NotifyItemUseResult(bSuccess, ItemId, bCanRetryTarget);
+}
+
+void AGomokuPlayerController::Client_NotifyItemUseResult_Implementation(bool bSuccess, int32 ItemId, bool bCanRetryTarget)
+{
+	bItemUseRequestPending = false;
+	FItemData ItemData;
+	UGomokuItemLibrary::GetItemData(ItemId, ItemData);
+	if (bSuccess)
+	{
+		ClearItemSelection();
+		SetItemFeedback(FString::Printf(TEXT("%s used successfully."), *ItemData.DisplayName.ToString()), true);
+	}
+	else if (bCanRetryTarget)
+	{
+		SetItemFeedback(FString::Printf(TEXT("%s cannot be used there. Choose another target or press Esc."),
+			*ItemData.DisplayName.ToString()), false);
+	}
+	else
+	{
+		ClearItemSelection();
+		SetItemFeedback(FString::Printf(TEXT("%s is no longer usable; selection cleared."),
+			*ItemData.DisplayName.ToString()), false);
+	}
+}
+
+void AGomokuPlayerController::RequestReplacePendingInventoryItem(int32 DiscardItemId)
+{
+	if (bItemUseRequestPending || DiscardItemId <= 0 || !GetWorld())
+	{
+		SetItemFeedback(TEXT("Wait for the current inventory request to finish."), false);
+		return;
+	}
+	AGomokuGameState* GS = GetWorld()->GetGameState<AGomokuGameState>();
+	if (!GS)
+	{
+		return;
+	}
+	int32 NewItemId = 0;
+	if (GetNetMode() == NM_Standalone && GS->GetRuleEngine() && GS->CurrentPlayerIndex >= 0)
+	{
+		NewItemId = GS->GetRuleEngine()->GetPlayerStateData(GS->CurrentPlayerIndex + 1).PendingInventoryItemId;
+		const bool bSuccess = GS->HandleReplacePendingInventoryItem(GS->CurrentPlayerIndex, DiscardItemId);
+		Client_NotifyInventoryReplaceResult_Implementation(bSuccess, DiscardItemId, NewItemId);
+		return;
+	}
+	if (const AGomokuPlayerState* LocalState = GetPlayerState<AGomokuPlayerState>())
+	{
+		NewItemId = LocalState->PendingInventoryItemId;
+	}
+	bItemUseRequestPending = true;
+	SetItemFeedback(TEXT("Waiting for the server to replace the selected slot..."), true);
+	Server_RequestReplacePendingInventoryItem(DiscardItemId);
+}
+
+void AGomokuPlayerController::Server_RequestReplacePendingInventoryItem_Implementation(int32 DiscardItemId)
+{
+	if (!HasAuthority() || !GetWorld())
+	{
+		Client_NotifyInventoryReplaceResult(false, DiscardItemId, 0);
+		return;
+	}
+	AGomokuGameState* GS = GetWorld()->GetGameState<AGomokuGameState>();
+	const int32 PlayerIndex = ResolveNetworkPlayerIndex();
+	if (!GS || PlayerIndex == INDEX_NONE)
+	{
+		Client_NotifyInventoryReplaceResult(false, DiscardItemId, 0);
+		return;
+	}
+	const int32 NewItemId = GS->GetRuleEngine()
+		? GS->GetRuleEngine()->GetPlayerStateData(PlayerIndex + 1).PendingInventoryItemId : 0;
+	Client_NotifyInventoryReplaceResult(
+		GS->HandleReplacePendingInventoryItem(PlayerIndex, DiscardItemId), DiscardItemId, NewItemId);
+}
+
+void AGomokuPlayerController::Client_NotifyInventoryReplaceResult_Implementation(
+	bool bSuccess, int32 DiscardItemId, int32 NewItemId)
+{
+	bItemUseRequestPending = false;
+	ClearItemSelection();
+	FItemData DiscardData;
+	FItemData NewData;
+	UGomokuItemLibrary::GetItemData(DiscardItemId, DiscardData);
+	UGomokuItemLibrary::GetItemData(NewItemId, NewData);
+	SetItemFeedback(bSuccess
+		? FString::Printf(TEXT("Discarded %s and stored %s. It unlocks next turn."),
+			*DiscardData.DisplayName.ToString(), *NewData.DisplayName.ToString())
+		: TEXT("That inventory replacement is no longer valid. The server kept your items unchanged."),
+		bSuccess);
 }
 
 void AGomokuPlayerController::Server_SetReadyForLobby_Implementation(bool bReady)
@@ -348,16 +474,49 @@ void AGomokuPlayerController::HandleMouseMove(FVector2D MousePos)
 	}
 }
 
-void AGomokuPlayerController::SelectItem(int32 ItemId)
+bool AGomokuPlayerController::SelectItem(int32 ItemId)
 {
+	if (bItemUseRequestPending)
+	{
+		SetItemFeedback(TEXT("Wait for the server to finish validating the current item."), false);
+		return false;
+	}
+	FString UnavailableReason;
+	if (!CanSelectItemForCurrentPlayer(ItemId, UnavailableReason))
+	{
+		ClearItemSelection();
+		SetItemFeedback(UnavailableReason, false);
+		return false;
+	}
+
 	SelectedItemId = ItemId;
-	bItemTargetingActive = (ItemId > 0);
+	bItemTargetingActive = true;
+	FItemData ItemData;
+	UGomokuItemLibrary::GetItemData(ItemId, ItemData);
+	SetItemFeedback(FString::Printf(TEXT("Selected %s. %s"),
+		*ItemData.DisplayName.ToString(), *ItemData.TargetInstruction.ToString()), true);
+
+	// Player-target items have a deterministic next-player target in this prototype.
+	// They execute directly from the inventory card/hotkey and still remain server-authoritative.
+	if (ItemData.TargetType == EItemTargetType::Player)
+	{
+		RequestUseSelectedItem(FIntPoint(-1, -1), -1);
+	}
+	return true;
 }
 
 void AGomokuPlayerController::CancelItemTargeting()
 {
-	SelectedItemId = 0;
-	bItemTargetingActive = false;
+	if (bItemUseRequestPending)
+	{
+		SetItemFeedback(TEXT("The item request is already being validated by the server."), false);
+		return;
+	}
+	if (bItemTargetingActive)
+	{
+		ClearItemSelection();
+		SetItemFeedback(TEXT("Item selection canceled."), false);
+	}
 }
 
 void AGomokuPlayerController::RequestUseSelectedItem(const FIntPoint& TargetCell, int32 TargetPlayerIndex)
@@ -366,19 +525,134 @@ void AGomokuPlayerController::RequestUseSelectedItem(const FIntPoint& TargetCell
 	{
 		return;
 	}
+	if (bItemUseRequestPending)
+	{
+		SetItemFeedback(TEXT("Waiting for the previous item request."), false);
+		return;
+	}
 
 	if (GetNetMode() == NM_Standalone)
 	{
 		if (AGomokuGameState* GS = GetWorld() ? GetWorld()->GetGameState<AGomokuGameState>() : nullptr)
 		{
-			GS->HandleUseItem(GS->CurrentPlayerIndex, SelectedItemId, TargetCell, TargetPlayerIndex);
+			const int32 AttemptedItemId = SelectedItemId;
+			const bool bSuccess = GS->HandleUseItem(
+				GS->CurrentPlayerIndex, AttemptedItemId, TargetCell, TargetPlayerIndex);
+			FItemData ItemData;
+			const bool bCanRetryTarget = !bSuccess
+				&& UGomokuItemLibrary::GetItemData(AttemptedItemId, ItemData)
+				&& ItemData.TargetType == EItemTargetType::Cell
+				&& UGomokuItemLibrary::CanUseItem(GS->GetRuleEngine(), GS->CurrentPlayerIndex + 1, AttemptedItemId);
+			Client_NotifyItemUseResult_Implementation(bSuccess, AttemptedItemId, bCanRetryTarget);
 		}
 	}
 	else
 	{
+		bItemUseRequestPending = true;
+		SetItemFeedback(TEXT("Waiting for server item validation..."), true);
 		Server_RequestUseItem(SelectedItemId, TargetCell, TargetPlayerIndex);
 	}
-	CancelItemTargeting();
+}
+
+bool AGomokuPlayerController::CanSelectItemForCurrentPlayer(int32 ItemId, FString& OutReason) const
+{
+	OutReason.Reset();
+	if (bItemUseRequestPending)
+	{
+		OutReason = TEXT("Wait for the server to finish validating the current item.");
+		return false;
+	}
+	FItemData ItemData;
+	if (!UGomokuItemLibrary::GetItemData(ItemId, ItemData))
+	{
+		OutReason = TEXT("Unknown item.");
+		return false;
+	}
+
+	const AGomokuGameState* GS = GomokuGSState
+		? GomokuGSState.Get()
+		: (GetWorld() ? GetWorld()->GetGameState<AGomokuGameState>() : nullptr);
+	if (!GS || !GS->IsGameActive || GS->MatchPhase != EMatchPhase::Playing)
+	{
+		OutReason = TEXT("Items are available only during the main match.");
+		return false;
+	}
+	if (!GS->bItemsEnabled)
+	{
+		OutReason = TEXT("Items are disabled in this room.");
+		return false;
+	}
+
+	TArray<int32> Inventory;
+	TArray<int32> LockedItems;
+	int32 Energy = 0;
+	bool bUsedThisTurn = false;
+	int32 PendingItemId = 0;
+	int32 LocalPlayerIndex = INDEX_NONE;
+	if (GetNetMode() == NM_Standalone && GS->GetRuleEngine() && GS->CurrentPlayerIndex >= 0)
+	{
+		LocalPlayerIndex = GS->CurrentPlayerIndex;
+		const FGomokuPlayerStateData Data = GS->GetRuleEngine()->GetPlayerStateData(LocalPlayerIndex + 1);
+		Inventory = Data.ItemIds;
+		LockedItems = Data.ItemIdsGainedThisTurn.Array();
+		Energy = Data.Energy;
+		bUsedThisTurn = Data.bUsedItemThisTurn;
+		PendingItemId = Data.PendingInventoryItemId;
+	}
+	else if (const AGomokuPlayerState* GomokuState = GetPlayerState<AGomokuPlayerState>())
+	{
+		LocalPlayerIndex = GomokuState->GomokuPlayerId - 1;
+		Inventory = GomokuState->InventoryItemIds;
+		LockedItems = GomokuState->LockedInventoryItemIds;
+		Energy = GomokuState->Energy;
+		bUsedThisTurn = GomokuState->bUsedItemThisTurn;
+		PendingItemId = GomokuState->PendingInventoryItemId;
+	}
+
+	if (LocalPlayerIndex != GS->CurrentPlayerIndex)
+	{
+		OutReason = TEXT("Wait for your turn before using an item.");
+		return false;
+	}
+	if (PendingItemId > 0)
+	{
+		OutReason = TEXT("Choose an inventory slot to discard before using an item.");
+		return false;
+	}
+	if (!Inventory.Contains(ItemId))
+	{
+		OutReason = FString::Printf(TEXT("You do not own %s."), *ItemData.DisplayName.ToString());
+		return false;
+	}
+	if (LockedItems.Contains(ItemId))
+	{
+		OutReason = TEXT("New items unlock at the start of your next turn.");
+		return false;
+	}
+	if (bUsedThisTurn)
+	{
+		OutReason = TEXT("Only one item can be used each turn.");
+		return false;
+	}
+	if (Energy < ItemData.EnergyCost)
+	{
+		OutReason = FString::Printf(TEXT("Not enough energy: %d required, %d available."),
+			ItemData.EnergyCost, Energy);
+		return false;
+	}
+	return true;
+}
+
+void AGomokuPlayerController::ClearItemSelection()
+{
+	SelectedItemId = 0;
+	bItemTargetingActive = false;
+}
+
+void AGomokuPlayerController::SetItemFeedback(const FString& Message, bool bSuccess)
+{
+	ItemFeedbackText = Message;
+	bLastItemFeedbackSuccess = bSuccess;
 }
 
 void AGomokuPlayerController::RequestAbandonMatch()

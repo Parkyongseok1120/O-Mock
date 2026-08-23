@@ -160,4 +160,80 @@ bool FGomokuStage8_ItemWinEndsMatch::RunTest(const FString& Parameters)
 	return bValid;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FGomokuStage8_PendingInventoryOfferIsServerModal,
+	TEXT("Gomoku.Stage8.PendingInventoryOfferIsServerModal"),
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FGomokuStage8_PendingInventoryOfferIsServerModal::RunTest(const FString& Parameters)
+{
+	UWorld* World = nullptr;
+	AGomokuGameState* GameState = MakeStage8GameState(World);
+	if (!TestNotNull(TEXT("GameState created"), GameState))
+	{
+		return false;
+	}
+
+	UGomokuRuleEngine* Engine = GameState->GetRuleEngine();
+	const TArray<int32> ExistingItems = Engine->GetPlayerStateData(1).ItemIds;
+	for (const int32 ExistingItem : ExistingItems)
+	{
+		Engine->RemoveItemFromInventory(1, ExistingItem);
+	}
+	Engine->AddItemToInventory(1, 1);
+	Engine->AddItemToInventory(1, 2);
+	Engine->ClearTurnItemLocksForPlayer(1);
+	Engine->SetPendingInventoryItem(1, 3);
+	const int32 EnergyBefore = Engine->GetPlayerStateData(1).Energy;
+
+	GameState->HandlePlaceStone(0, FIntPoint(4, 4));
+	const bool bItemResult = GameState->HandleUseItem(0, 1, FIntPoint(3, 3), -1);
+	bool bValid = TestEqual(TEXT("Pending offer blocks forged placement RPC"),
+		Engine->GetCellState(4, 4), ECellState::Empty)
+		&& TestFalse(TEXT("Pending offer blocks forged item RPC"), bItemResult)
+		&& TestEqual(TEXT("Rejected item request preserves energy"),
+			Engine->GetPlayerStateData(1).Energy, EnergyBefore)
+		&& TestTrue(TEXT("Player can explicitly replace a selected slot"),
+			GameState->HandleReplacePendingInventoryItem(0, 1));
+
+	GameState->HandlePlaceStone(0, FIntPoint(4, 4));
+	bValid &= TestEqual(TEXT("Placement resumes after replacement"),
+		Engine->GetCellState(4, 4), ECellState::Player1);
+	World->DestroyWorld(false);
+	return bValid;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FGomokuStage8_PendingOfferTimeoutCannotStallMatch,
+	TEXT("Gomoku.Stage8.PendingOfferTimeoutCannotStallMatch"),
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FGomokuStage8_PendingOfferTimeoutCannotStallMatch::RunTest(const FString& Parameters)
+{
+	UWorld* World = nullptr;
+	AGomokuGameState* GameState = MakeStage8GameState(World);
+	if (!TestNotNull(TEXT("GameState created"), GameState))
+	{
+		return false;
+	}
+	UGomokuRuleEngine* Engine = GameState->GetRuleEngine();
+	const TArray<int32> ExistingItems = Engine->GetPlayerStateData(1).ItemIds;
+	for (const int32 ExistingItem : ExistingItems)
+	{
+		Engine->RemoveItemFromInventory(1, ExistingItem);
+	}
+	Engine->AddItemToInventory(1, 1);
+	Engine->AddItemToInventory(1, 2);
+	Engine->ClearTurnItemLocksForPlayer(1);
+	Engine->SetPendingInventoryItem(1, 3);
+	GameState->MaxTurnTime = 0.01f;
+	GameState->TickTimeSystem(1.0f);
+	const FGomokuPlayerStateData AfterTimeout = Engine->GetPlayerStateData(1);
+	const bool bValid = TestEqual(TEXT("Timeout resolves the pending offer"), AfterTimeout.PendingInventoryItemId, 0)
+		&& TestTrue(TEXT("Timeout keeps the offered item"), AfterTimeout.ItemIds.Contains(3))
+		&& TestEqual(TEXT("Timeout advances to the next player"), GameState->CurrentPlayerIndex, 1);
+	World->DestroyWorld(false);
+	return bValid;
+}
+
 #endif // WITH_DEV_AUTOMATION_TESTS

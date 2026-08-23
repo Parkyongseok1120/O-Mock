@@ -32,7 +32,6 @@ void UGomokuRuleEngine::InitializeMatch(const FGomokuMatchConfig& Config)
 	TurnDirection = 1;
 	GuardianProtectionExpireRounds.Reset();
 	TemporaryBlockedCellExpireRounds.Reset();
-	LastSkipTargetPlayerId = INDEX_NONE;
 	LastItemWinResult = FGomokuWinResult();
 
 	MatchConfig = Config;
@@ -364,6 +363,62 @@ bool UGomokuRuleEngine::AddItemToInventory(int32 PlayerId, int32 ItemId)
 	return true;
 }
 
+bool UGomokuRuleEngine::SetPendingInventoryItem(int32 PlayerId, int32 ItemId)
+{
+	if (!bInitialized || !UGomokuItemLibrary::IsRegisteredItemId(ItemId))
+	{
+		return false;
+	}
+	FGomokuPlayerStateData* Player = FindPlayerMutable(PlayerId);
+	if (!Player || Player->PendingInventoryItemId > 0 || Player->ItemIds.Contains(ItemId))
+	{
+		return false;
+	}
+	Player->PendingInventoryItemId = ItemId;
+	return true;
+}
+
+bool UGomokuRuleEngine::ReplaceInventoryItemWithPending(int32 PlayerId, int32 DiscardItemId)
+{
+	FGomokuPlayerStateData* Player = FindPlayerMutable(PlayerId);
+	if (!bInitialized || !Player || Player->PendingInventoryItemId <= 0
+		|| !UGomokuItemLibrary::IsRegisteredItemId(Player->PendingInventoryItemId)
+		|| !Player->ItemIds.Contains(DiscardItemId))
+	{
+		return false;
+	}
+
+	const int32 NewItemId = Player->PendingInventoryItemId;
+	if (Player->ItemIds.Contains(NewItemId))
+	{
+		return false;
+	}
+	Player->ItemIds.RemoveSingle(DiscardItemId);
+	Player->ItemIdsGainedThisTurn.Remove(DiscardItemId);
+	Player->ItemIds.Add(NewItemId);
+	Player->ItemIdsGainedThisTurn.Add(NewItemId);
+	Player->PendingInventoryItemId = 0;
+	return true;
+}
+
+bool UGomokuRuleEngine::ClaimPendingInventoryItemIntoFreeSlot(int32 PlayerId)
+{
+	FGomokuPlayerStateData* Player = FindPlayerMutable(PlayerId);
+	if (!bInitialized || !Player || Player->PendingInventoryItemId <= 0 || Player->ItemIds.Num() >= 2)
+	{
+		return false;
+	}
+	const int32 NewItemId = Player->PendingInventoryItemId;
+	if (!UGomokuItemLibrary::IsRegisteredItemId(NewItemId) || Player->ItemIds.Contains(NewItemId))
+	{
+		return false;
+	}
+	Player->ItemIds.Add(NewItemId);
+	Player->ItemIdsGainedThisTurn.Add(NewItemId);
+	Player->PendingInventoryItemId = 0;
+	return true;
+}
+
 int32 UGomokuRuleEngine::GetCurrentPlayerId() const
 {
 	if (!bInitialized || !PlayerOrder.IsValidIndex(CurrentPlayerIndex))
@@ -507,15 +562,11 @@ bool UGomokuRuleEngine::SetPlayerSkipNextTurn(int32 PlayerId, bool bSkip)
 {
 	if (FGomokuPlayerStateData* Player = FindPlayerMutable(PlayerId))
 	{
-		if (bSkip && (!IsActiveMatchPlayer(PlayerId) || Player->bSkipNextTurn || LastSkipTargetPlayerId == PlayerId))
+		if (bSkip && (!IsActiveMatchPlayer(PlayerId) || Player->bSkipNextTurn))
 		{
 			return false;
 		}
 		Player->bSkipNextTurn = bSkip;
-		if (bSkip)
-		{
-			LastSkipTargetPlayerId = PlayerId;
-		}
 		return true;
 	}
 	return false;
@@ -728,6 +779,17 @@ bool UGomokuRuleEngine::IsCellGuardianProtected(int32 X, int32 Y) const
 {
 	if (!IsValidCoordinate(X, Y)) return false;
 	return GuardianProtectionExpireRounds.Contains(FIntPoint(X, Y));
+}
+
+TArray<FIntPoint> UGomokuRuleEngine::GetGuardianProtectedCells() const
+{
+	TArray<FIntPoint> Cells;
+	GuardianProtectionExpireRounds.GenerateKeyArray(Cells);
+	Cells.Sort([](const FIntPoint& Left, const FIntPoint& Right)
+	{
+		return Left.Y == Right.Y ? Left.X < Right.X : Left.Y < Right.Y;
+	});
+	return Cells;
 }
 
 bool UGomokuRuleEngine::ApplyTemporaryBlock(const FIntPoint& Cell, int32 ExpireAfterRound)

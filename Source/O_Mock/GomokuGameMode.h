@@ -31,6 +31,27 @@ public:
 	UPROPERTY(BlueprintReadOnly, Category = "Gomoku|Lobby")
 	bool bMatchStarted = false;
 
+	UPROPERTY(BlueprintReadOnly, Category = "Gomoku|Lobby")
+	int32 RequestedBoardSize = 15;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Gomoku|Lobby")
+	int32 RequestedBotCount = 0;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Gomoku|Lobby")
+	int32 RequestedPersonalTimeSeconds = 120;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Gomoku|Lobby")
+	int32 RequestedTurnTimeSeconds = 25;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Gomoku|Lobby")
+	bool bRequestedItemsEnabled = true;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Gomoku|Lobby")
+	bool bRequestedMiniGameEnabled = true;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Gomoku|Lobby")
+	bool bPasswordProtected = false;
+
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gomoku|Template")
 	TObjectPtr<UGomokuBoardTemplateDataAsset> BoardTemplate;
 
@@ -58,6 +79,9 @@ public:
 	bool TryStartMatch(APlayerController* RequestingPlayer, const FString& MapName = TEXT("/Game/NewWorld"));
 
 protected:
+	virtual void InitGame(const FString& MapName, const FString& Options, FString& ErrorMessage) override;
+	virtual void PreLogin(const FString& Options, const FString& Address, const FUniqueNetIdRepl& UniqueId,
+		FString& ErrorMessage) override;
 	virtual void BeginPlay() override;
 	virtual void HandleStartingNewPlayer_Implementation(APlayerController* NewPlayer) override;
 	virtual AActor* ChoosePlayerStart_Implementation(AController* Player) override;
@@ -72,7 +96,10 @@ private:
 	UPROPERTY(Transient)
 	TWeakObjectPtr<AGomokuBoardActor> BoardActor;
 
+	FString ExpectedRoomPasswordHash;
+
 	bool BuildMatchConfig(FGomokuMatchConfig& OutConfig) const;
+	int32 SpawnRequestedBots();
 	void InitializeMatchFromSettings();
 	AGomokuBoardActor* EnsureBoardActor();
 	void ConfigureBoardActor();

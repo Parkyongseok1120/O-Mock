@@ -31,6 +31,8 @@ static AGomokuGameState* MakeStage11GameState(UWorld*& OutWorld)
 	Config.InitialEnergyPerPlayer = 5;
 	Engine->InitializeMatch(Config);
 	GameState->SetRuleEngineRef(Engine);
+	// Keep this suite focused on mini-game scheduling instead of inventory offers.
+	GameState->bItemsEnabled = false;
 	GameState->InitializeForLocalHotseat(2);
 	return GameState;
 }

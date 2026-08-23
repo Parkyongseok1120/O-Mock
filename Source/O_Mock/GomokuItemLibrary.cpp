@@ -82,16 +82,43 @@ bool UGomokuItemLibrary::GetItemData(int32 ItemId, FItemData& OutItemData)
 	}
 
 	FText DisplayName;
+	FText Description;
+	FText TargetInstruction;
 	switch (Definition->Type)
 	{
-	case EGomokuItemType::SealStone: DisplayName = FText::FromString(TEXT("Seal")); break;
-	case EGomokuItemType::Pull: DisplayName = FText::FromString(TEXT("Pull")); break;
-	case EGomokuItemType::Steal: DisplayName = FText::FromString(TEXT("Steal")); break;
-	case EGomokuItemType::SkipTurn: DisplayName = FText::FromString(TEXT("Skip")); break;
-	case EGomokuItemType::GuardianBarrier: DisplayName = FText::FromString(TEXT("Guard")); break;
-	default: DisplayName = FText::FromString(TEXT("Unknown")); break;
+	case EGomokuItemType::SealStone:
+		DisplayName = FText::FromString(TEXT("Seal Stone"));
+		Description = FText::FromString(TEXT("Block an empty cell for one round."));
+		TargetInstruction = FText::FromString(TEXT("Choose an empty cell."));
+		break;
+	case EGomokuItemType::Pull:
+		DisplayName = FText::FromString(TEXT("Pull"));
+		Description = FText::FromString(TEXT("Move an adjacent allied stone into an empty cell."));
+		TargetInstruction = FText::FromString(TEXT("Choose an empty cell beside one of your stones."));
+		break;
+	case EGomokuItemType::Steal:
+		DisplayName = FText::FromString(TEXT("Steal"));
+		Description = FText::FromString(TEXT("Convert an isolated enemy stone to your color."));
+		TargetInstruction = FText::FromString(TEXT("Choose an isolated, unguarded enemy stone."));
+		break;
+	case EGomokuItemType::SkipTurn:
+		DisplayName = FText::FromString(TEXT("Skip Turn"));
+		Description = FText::FromString(TEXT("Skip the next active player's turn."));
+		TargetInstruction = FText::FromString(TEXT("Click the card to use it immediately."));
+		break;
+	case EGomokuItemType::GuardianBarrier:
+		DisplayName = FText::FromString(TEXT("Guardian Barrier"));
+		Description = FText::FromString(TEXT("Protect one allied stone for two rounds."));
+		TargetInstruction = FText::FromString(TEXT("Choose one of your unguarded stones."));
+		break;
+	default:
+		DisplayName = FText::FromString(TEXT("Unknown"));
+		Description = FText::GetEmpty();
+		TargetInstruction = FText::GetEmpty();
+		break;
 	}
-	OutItemData = FItemData(Definition->Id, DisplayName, Definition->EnergyCost, Definition->TargetType);
+	OutItemData = FItemData(Definition->Id, DisplayName, Definition->EnergyCost, Definition->TargetType,
+		Description, TargetInstruction);
 	return true;
 }
 

@@ -4,6 +4,7 @@
 
 #include "Misc/AutomationTest.h"
 #include "GomokuBotLibrary.h"
+#include "GomokuItemLibrary.h"
 #include "GomokuRuleEngine.h"
 #include "GomokuTypes.h"
 
@@ -91,6 +92,64 @@ bool FGomokuStage13_BotsCompleteRepeatedTwoThreeFourPlayerGames::RunTest(const F
 	}
 
 	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FGomokuStage13_BotUsesItemsByProbability,
+	TEXT("Gomoku.Stage13.BotUsesItemsByProbability"),
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FGomokuStage13_BotUsesItemsByProbability::RunTest(const FString& Parameters)
+{
+	UGomokuRuleEngine* UsesItemEngine = MakeStage13Engine(2);
+	UsesItemEngine->AddPlayerEnergy(1, 5, UGomokuItemLibrary::MaxEnergy);
+	UsesItemEngine->AddItemToInventory(1, 1);
+	FRandomStream AlwaysUseRandom(1337);
+	FGomokuBotItemAction Action;
+	FIntPoint Move;
+	if (!TestTrue(TEXT("Bot turn completes with item policy"), UGomokuBotLibrary::TakeTurnWithItems(
+		UsesItemEngine, 1, 1.0f, AlwaysUseRandom, 1, Action, Move))
+		|| !TestTrue(TEXT("Probability one uses a valid item"), Action.bUsedItem)
+		|| !TestEqual(TEXT("Owned Seal item is selected"), Action.ItemId, 1)
+		|| !TestFalse(TEXT("Used item is consumed"), UsesItemEngine->PlayerHasItem(1, 1)))
+	{
+		return false;
+	}
+
+	UGomokuRuleEngine* KeepsItemEngine = MakeStage13Engine(2);
+	KeepsItemEngine->AddPlayerEnergy(1, 5, UGomokuItemLibrary::MaxEnergy);
+	KeepsItemEngine->AddItemToInventory(1, 1);
+	FRandomStream NeverUseRandom(1337);
+	Action = FGomokuBotItemAction();
+	return TestTrue(TEXT("Bot still places when probability is zero"), UGomokuBotLibrary::TakeTurnWithItems(
+		KeepsItemEngine, 1, 0.0f, NeverUseRandom, 1, Action, Move))
+		&& TestFalse(TEXT("Probability zero skips item use"), Action.bUsedItem)
+		&& TestTrue(TEXT("Skipped item remains owned"), KeepsItemEngine->PlayerHasItem(1, 1));
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FGomokuStage13_BotItemPolicyRejectsNonCurrentPlayerWithoutMutation,
+	TEXT("Gomoku.Stage13.BotItemPolicyRejectsNonCurrentPlayerWithoutMutation"),
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FGomokuStage13_BotItemPolicyRejectsNonCurrentPlayerWithoutMutation::RunTest(const FString& Parameters)
+{
+	UGomokuRuleEngine* Engine = MakeStage13Engine(2);
+	Engine->AddPlayerEnergy(2, 5, UGomokuItemLibrary::MaxEnergy);
+	Engine->AddItemToInventory(2, 1);
+	Engine->ClearTurnItemLocksForPlayer(2);
+	const int32 EnergyBefore = Engine->GetPlayerStateData(2).Energy;
+	FRandomStream Random(7);
+	FGomokuBotItemAction Action;
+	FIntPoint Move;
+	const bool bTurnResult = UGomokuBotLibrary::TakeTurnWithItems(
+		Engine, 2, 1.0f, Random, 1, Action, Move);
+	return TestFalse(TEXT("Non-current bot turn is rejected"), bTurnResult)
+		&& TestFalse(TEXT("Rejected bot does not report item use"), Action.bUsedItem)
+		&& TestEqual(TEXT("Rejected bot preserves energy"), Engine->GetPlayerStateData(2).Energy, EnergyBefore)
+		&& TestTrue(TEXT("Rejected bot preserves inventory"), Engine->PlayerHasItem(2, 1))
+		&& TestEqual(TEXT("Rejected bot leaves target cells unchanged"),
+			Engine->GetCellState(0, 0), ECellState::Empty);
 }
 
 #endif // WITH_DEV_AUTOMATION_TESTS

@@ -41,7 +41,14 @@ public:
 
 	/** Smallest orbit-arm multiplier allowed by wheel zoom. Lower values permit a closer view. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gomoku|Camera", meta = (ClampMin = "0.20", ClampMax = "1.00"))
-	float MinimumCameraDistanceMultiplier = 0.42f;
+	float MinimumCameraDistanceMultiplier = 0.32f;
+
+	/** Enables a subtle showroom orbit for the 3D main-menu background. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gomoku|Camera")
+	bool bAutoOrbitCamera = false;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gomoku|Camera", meta = (ClampMin = "0.1", ClampMax = "20.0"))
+	float AutoOrbitDegreesPerSecond = 2.0f;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Gomoku|Board")
 	TObjectPtr<UInstancedStaticMeshComponent> StoneInstances;
@@ -66,6 +73,26 @@ public:
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Gomoku|Board")
 	TObjectPtr<UInstancedStaticMeshComponent> HoverCellInstances;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Gomoku|Items")
+	TObjectPtr<UInstancedStaticMeshComponent> GuardianCellInstances;
+
+	/** Gold cells where the current player can win immediately. */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Gomoku|Prediction")
+	TObjectPtr<UInstancedStaticMeshComponent> CurrentWinThreatInstances;
+
+	/** Red cells where at least one opponent can win immediately. */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Gomoku|Prediction")
+	TObjectPtr<UInstancedStaticMeshComponent> OpponentWinThreatInstances;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Gomoku|Prediction")
+	TObjectPtr<UInstancedStaticMeshComponent> PullDestinationInstances;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Gomoku|Prediction")
+	TObjectPtr<UInstancedStaticMeshComponent> PullSourceInstances;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Gomoku|Prediction")
+	TObjectPtr<UInstancedStaticMeshComponent> StealTargetInstances;
 
 	UFUNCTION(BlueprintPure, Category = "Gomoku|Board")
 	bool WorldToGrid(const FVector& WorldLoc, int32& OutX, int32& OutY) const;
@@ -169,8 +196,12 @@ private:
 	void RebuildBoardGrid();
 	void RebuildEnvironmentScenery();
 	void AddBlockedCell(int32 X, int32 Y);
+	void AddGuardianCell(int32 X, int32 Y);
 	void RefreshFromReplicatedBoard();
 	void UpdateHoverIndicator();
+	void UpdatePredictionIndicators();
+	void AddPredictionMarker(UInstancedStaticMeshComponent* Component, const FIntPoint& Cell,
+		float DiameterMultiplier, float ZOffset);
 	void ConfigureStoneComponent(UInstancedStaticMeshComponent* Component, const FLinearColor& Color);
 	UInstancedStaticMeshComponent* GetStoneComponentForPlayer(int32 PlayerId) const;
 	int32 GetPlayerIdAtCell(const FIntPoint& Cell) const;
@@ -180,6 +211,7 @@ private:
 	FIntPoint LastCameraViewportSize = FIntPoint::ZeroValue;
 	float CameraBaseArmLength = 1600.f;
 	float CameraDistanceMultiplier = 1.f;
+	uint32 LastPredictionFingerprint = 0;
 
 	UPROPERTY(Transient)
 	TArray<TObjectPtr<UMaterialInstanceDynamic>> RuntimeMaterials;

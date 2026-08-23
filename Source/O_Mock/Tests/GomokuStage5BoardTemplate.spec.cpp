@@ -7,6 +7,7 @@
 #include "GomokuTypes.h"
 #include "GomokuBoardTemplateDataAsset.h"
 #include "GomokuBoardTemplateTypes.h"
+#include "GomokuGameMode.h"
 #include "Engine/World.h"
 
 // Helper: create a rule engine with given config.
@@ -214,6 +215,37 @@ bool FGomokuStage5_WinCheckWorksOnLargerBoard::RunTest(const FString& Parameters
 		return false;
 
 	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FGomokuStage5_FourPlayersUseAtLeastTwentyOneByTwentyOne,
+	TEXT("Gomoku.Stage5.FourPlayersUseAtLeastTwentyOneByTwentyOne"),
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FGomokuStage5_FourPlayersUseAtLeastTwentyOneByTwentyOne::RunTest(const FString& Parameters)
+{
+	UWorld* World = UWorld::CreateWorld(EWorldType::Game, false);
+	if (!TestNotNull(TEXT("World created"), World))
+	{
+		return false;
+	}
+
+	AGomokuGameMode* GameMode = World->SpawnActor<AGomokuGameMode>();
+	UGomokuBoardTemplateDataAsset* Template = NewObject<UGomokuBoardTemplateDataAsset>(GameMode);
+	Template->Width = 15;
+	Template->Height = 15;
+	GameMode->DefaultHotseatPlayers = 4;
+	GameMode->BoardTemplate = Template;
+	GameMode->ApplyBoardTemplate();
+
+	const FGomokuMatchConfig& Config = GameMode->GetRuleEngine()->GetMatchConfig();
+	const bool bValid =
+		TestEqual(TEXT("Four-player width is 21"), Config.BoardSizeX, 21) &&
+		TestEqual(TEXT("Four-player height is 21"), Config.BoardSizeY, 21) &&
+		TestEqual(TEXT("Four players remain configured"), Config.MaxPlayers, 4);
+
+	World->DestroyWorld(false);
+	return bValid;
 }
 
 #endif // WITH_DEV_AUTOMATION_TESTS

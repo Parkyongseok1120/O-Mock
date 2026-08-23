@@ -12,6 +12,9 @@
 #include "GameFramework/SpringArmComponent.h"
 #include "Camera/CameraComponent.h"
 #include "GomokuGameState.h"
+#include "GomokuPlayerController.h"
+#include "GomokuPlayerState.h"
+#include "GomokuPredictionLibrary.h"
 #include "GomokuRuleEngine.h"
 #include "Materials/MaterialInstanceDynamic.h"
 #include "Materials/MaterialInterface.h"
@@ -65,6 +68,18 @@ AGomokuBoardActor::AGomokuBoardActor()
 	BoardFrameInstances->SetupAttachment(SceneRoot);
 	HoverCellInstances = CreateDefaultSubobject<UInstancedStaticMeshComponent>(TEXT("HoverCellInstances"));
 	HoverCellInstances->SetupAttachment(SceneRoot);
+	GuardianCellInstances = CreateDefaultSubobject<UInstancedStaticMeshComponent>(TEXT("GuardianCellInstances"));
+	GuardianCellInstances->SetupAttachment(SceneRoot);
+	CurrentWinThreatInstances = CreateDefaultSubobject<UInstancedStaticMeshComponent>(TEXT("CurrentWinThreatInstances"));
+	CurrentWinThreatInstances->SetupAttachment(SceneRoot);
+	OpponentWinThreatInstances = CreateDefaultSubobject<UInstancedStaticMeshComponent>(TEXT("OpponentWinThreatInstances"));
+	OpponentWinThreatInstances->SetupAttachment(SceneRoot);
+	PullDestinationInstances = CreateDefaultSubobject<UInstancedStaticMeshComponent>(TEXT("PullDestinationInstances"));
+	PullDestinationInstances->SetupAttachment(SceneRoot);
+	PullSourceInstances = CreateDefaultSubobject<UInstancedStaticMeshComponent>(TEXT("PullSourceInstances"));
+	PullSourceInstances->SetupAttachment(SceneRoot);
+	StealTargetInstances = CreateDefaultSubobject<UInstancedStaticMeshComponent>(TEXT("StealTargetInstances"));
+	StealTargetInstances->SetupAttachment(SceneRoot);
 	HillInstances = CreateDefaultSubobject<UInstancedStaticMeshComponent>(TEXT("HillInstances"));
 	HillInstances->SetupAttachment(SceneRoot);
 	TreeTrunkInstances = CreateDefaultSubobject<UInstancedStaticMeshComponent>(TEXT("TreeTrunkInstances"));
@@ -130,6 +145,31 @@ AGomokuBoardActor::AGomokuBoardActor()
 	if (BasicMaterialFinder.Succeeded())
 	{
 		HoverCellInstances->SetMaterial(0, BasicMaterialFinder.Object);
+	}
+	GuardianCellInstances->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	if (StoneMeshFinder.Succeeded())
+	{
+		GuardianCellInstances->SetStaticMesh(StoneMeshFinder.Object);
+	}
+	if (BasicMaterialFinder.Succeeded())
+	{
+		GuardianCellInstances->SetMaterial(0, BasicMaterialFinder.Object);
+	}
+	UInstancedStaticMeshComponent* PredictionComponents[] = {
+		CurrentWinThreatInstances.Get(), OpponentWinThreatInstances.Get(), PullDestinationInstances.Get(),
+		PullSourceInstances.Get(), StealTargetInstances.Get()
+	};
+	for (UInstancedStaticMeshComponent* Component : PredictionComponents)
+	{
+		Component->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+		if (StoneMeshFinder.Succeeded())
+		{
+			Component->SetStaticMesh(StoneMeshFinder.Object);
+		}
+		if (BasicMaterialFinder.Succeeded())
+		{
+			Component->SetMaterial(0, BasicMaterialFinder.Object);
+		}
 	}
 
 	UInstancedStaticMeshComponent* EnvironmentComponents[] = {
@@ -269,6 +309,12 @@ void AGomokuBoardActor::BeginPlay()
 	ConfigureStoneComponent(BlockedCellInstances, FLinearColor(0.45f, 0.08f, 0.06f));
 	ConfigureStoneComponent(BoardFrameInstances, FLinearColor(0.18f, 0.07f, 0.025f));
 	ConfigureStoneComponent(HoverCellInstances, FLinearColor(1.0f, 0.68f, 0.12f));
+	ConfigureStoneComponent(GuardianCellInstances, FLinearColor(0.08f, 0.85f, 1.0f));
+	ConfigureStoneComponent(CurrentWinThreatInstances, FLinearColor(1.0f, 0.72f, 0.06f));
+	ConfigureStoneComponent(OpponentWinThreatInstances, FLinearColor(1.0f, 0.08f, 0.035f));
+	ConfigureStoneComponent(PullDestinationInstances, FLinearColor(0.05f, 0.88f, 1.0f));
+	ConfigureStoneComponent(PullSourceInstances, FLinearColor(0.20f, 1.0f, 0.38f));
+	ConfigureStoneComponent(StealTargetInstances, FLinearColor(1.0f, 0.08f, 0.72f));
 	ConfigureStoneComponent(HillInstances, FLinearColor(0.12f, 0.24f, 0.16f));
 	ConfigureStoneComponent(TreeTrunkInstances, FLinearColor(0.20f, 0.085f, 0.035f));
 	ConfigureStoneComponent(TreeCanopyInstances, FLinearColor(0.055f, 0.30f, 0.12f));
@@ -328,6 +374,10 @@ void AGomokuBoardActor::EndPlay(const EEndPlayReason::Type EndPlayReason)
 void AGomokuBoardActor::Tick(float DeltaSeconds)
 {
 	Super::Tick(DeltaSeconds);
+	if (bAutoOrbitCamera)
+	{
+		OrbitCamera(AutoOrbitDegreesPerSecond * DeltaSeconds, 0.f);
+	}
 	if (APlayerController* PlayerController = UGameplayStatics::GetPlayerController(GetWorld(), 0))
 	{
 		int32 ViewportX = 0;
@@ -365,6 +415,7 @@ void AGomokuBoardActor::Tick(float DeltaSeconds)
 		}
 	}
 	UpdateHoverIndicator();
+	UpdatePredictionIndicators();
 }
 
 void AGomokuBoardActor::ApplyBoardSize(int32 InSizeX, int32 InSizeY)
@@ -387,7 +438,9 @@ void AGomokuBoardActor::ApplyBoardSize(int32 InSizeX, int32 InSizeY)
 
 void AGomokuBoardActor::RebuildBoardGrid()
 {
-	if (!BoardGridInstances || !BlockedCellInstances || !BoardFrameInstances || !HoverCellInstances)
+	if (!BoardGridInstances || !BlockedCellInstances || !BoardFrameInstances || !HoverCellInstances
+		|| !GuardianCellInstances || !CurrentWinThreatInstances || !OpponentWinThreatInstances
+		|| !PullDestinationInstances || !PullSourceInstances || !StealTargetInstances)
 	{
 		return;
 	}
@@ -396,6 +449,13 @@ void AGomokuBoardActor::RebuildBoardGrid()
 	BlockedCellInstances->ClearInstances();
 	BoardFrameInstances->ClearInstances();
 	HoverCellInstances->ClearInstances();
+	GuardianCellInstances->ClearInstances();
+	CurrentWinThreatInstances->ClearInstances();
+	OpponentWinThreatInstances->ClearInstances();
+	PullDestinationInstances->ClearInstances();
+	PullSourceInstances->ClearInstances();
+	StealTargetInstances->ClearInstances();
+	LastPredictionFingerprint = 0;
 	DisplayedHoveredCell = FIntPoint(-1, -1);
 	const float EffectiveCellSize = GetEffectiveCellSize();
 	const float Width = BoardSizeX * EffectiveCellSize;
@@ -493,6 +553,19 @@ void AGomokuBoardActor::AddBlockedCell(int32 X, int32 Y)
 	Pad.SetLocation(GridToWorld(X, Y) + FVector(0.f, 0.f, -5.f));
 	Pad.SetScale3D(FVector(PadSize / 100.f, PadSize / 100.f, 0.06f));
 	BlockedCellInstances->AddInstance(Pad);
+}
+
+void AGomokuBoardActor::AddGuardianCell(int32 X, int32 Y)
+{
+	if (!GuardianCellInstances || X < 0 || Y < 0 || X >= BoardSizeX || Y >= BoardSizeY)
+	{
+		return;
+	}
+	const float RingDiameterScale = (GetEffectiveCellSize() * 0.94f) / 100.f;
+	FTransform Ring;
+	Ring.SetLocation(GridToWorld(X, Y) + FVector(0.f, 0.f, -7.f));
+	Ring.SetScale3D(FVector(RingDiameterScale, RingDiameterScale, 0.035f));
+	GuardianCellInstances->AddInstance(Ring);
 }
 
 void AGomokuBoardActor::FitCameraToBoard()
@@ -705,6 +778,14 @@ void AGomokuBoardActor::RefreshFromReplicatedBoard()
 		const int32 Y = Index / SourceSizeX;
 		AddStoneAt(X, Y, UGomokuRuleEngine::CellStateToPlayerId(State));
 	}
+
+	if (!bMiniGame)
+	{
+		for (const FIntPoint& GuardedCell : GS->ReplicatedGuardianCells)
+		{
+			AddGuardianCell(GuardedCell.X, GuardedCell.Y);
+		}
+	}
 }
 
 void AGomokuBoardActor::UpdateHoverIndicator()
@@ -736,6 +817,156 @@ void AGomokuBoardActor::UpdateHoverIndicator()
 	HoverTransform.SetScale3D(FVector(DiameterScale, DiameterScale, 0.035f));
 	HoverCellInstances->AddInstance(HoverTransform);
 	DisplayedHoveredCell = DesiredCell;
+}
+
+void AGomokuBoardActor::AddPredictionMarker(UInstancedStaticMeshComponent* Component,
+	const FIntPoint& Cell, float DiameterMultiplier, float ZOffset)
+{
+	if (!Component || Cell.X < 0 || Cell.Y < 0 || Cell.X >= BoardSizeX || Cell.Y >= BoardSizeY)
+	{
+		return;
+	}
+	const float Scale = (GetEffectiveCellSize() * DiameterMultiplier) / 100.f;
+	FTransform Marker;
+	Marker.SetLocation(GridToWorld(Cell.X, Cell.Y) + FVector(0.f, 0.f, ZOffset));
+	Marker.SetScale3D(FVector(Scale, Scale, 0.025f));
+	Component->AddInstance(Marker);
+}
+
+void AGomokuBoardActor::UpdatePredictionIndicators()
+{
+	if (!GetWorld() || !CurrentWinThreatInstances || !OpponentWinThreatInstances
+		|| !PullDestinationInstances || !PullSourceInstances || !StealTargetInstances)
+	{
+		return;
+	}
+	const AGomokuGameState* GS = GetWorld()->GetGameState<AGomokuGameState>();
+	AGomokuPlayerController* PC = Cast<AGomokuPlayerController>(UGameplayStatics::GetPlayerController(GetWorld(), 0));
+	if (!GS || !GS->IsGameActive || GS->MatchPhase != EMatchPhase::Playing
+		|| GS->ReplicatedBoardCells.Num() != GS->ReplicatedBoardSizeX * GS->ReplicatedBoardSizeY)
+	{
+		if (LastPredictionFingerprint != 0)
+		{
+			CurrentWinThreatInstances->ClearInstances();
+			OpponentWinThreatInstances->ClearInstances();
+			PullDestinationInstances->ClearInstances();
+			PullSourceInstances->ClearInstances();
+			StealTargetInstances->ClearInstances();
+			LastPredictionFingerprint = 0;
+		}
+		return;
+	}
+
+	uint32 Fingerprint = HashCombine(GetTypeHash(GS->CurrentPlayerIndex), GetTypeHash(PC ? PC->SelectedItemId : 0));
+	Fingerprint = HashCombine(Fingerprint, GetTypeHash(GS->HoveredCell));
+	for (const ECellState State : GS->ReplicatedBoardCells)
+	{
+		Fingerprint = HashCombine(Fingerprint, GetTypeHash(static_cast<uint8>(State)));
+	}
+	for (const FIntPoint& Cell : GS->ReplicatedGuardianCells)
+	{
+		Fingerprint = HashCombine(Fingerprint, GetTypeHash(Cell));
+	}
+	for (const APlayerState* BasePlayerState : GS->PlayerArray)
+	{
+		if (const AGomokuPlayerState* PlayerState = Cast<AGomokuPlayerState>(BasePlayerState))
+		{
+			Fingerprint = HashCombine(Fingerprint, GetTypeHash(PlayerState->GomokuPlayerId));
+			Fingerprint = HashCombine(Fingerprint, GetTypeHash(PlayerState->bAbandoned));
+		}
+	}
+	if (Fingerprint == LastPredictionFingerprint)
+	{
+		return;
+	}
+	LastPredictionFingerprint = Fingerprint;
+	CurrentWinThreatInstances->ClearInstances();
+	OpponentWinThreatInstances->ClearInstances();
+	PullDestinationInstances->ClearInstances();
+	PullSourceInstances->ClearInstances();
+	StealTargetInstances->ClearInstances();
+
+	const int32 CurrentPlayerId = GS->CurrentPlayerIndex + 1;
+	for (const FIntPoint& Cell : UGomokuPredictionLibrary::FindImmediateWinCells(
+		GS->ReplicatedBoardCells, GS->ReplicatedBoardSizeX, GS->ReplicatedBoardSizeY, CurrentPlayerId))
+	{
+		AddPredictionMarker(CurrentWinThreatInstances, Cell, 0.76f, -4.f);
+	}
+	TSet<FIntPoint> OpponentThreats;
+	for (int32 PlayerId = 1; PlayerId <= FMath::Clamp(GS->LocalPlayerCount, 2, 4); ++PlayerId)
+	{
+		if (PlayerId == CurrentPlayerId)
+		{
+			continue;
+		}
+		bool bOpponentIsActive = true;
+		if (const UGomokuRuleEngine* LocalEngine = GS->GetRuleEngine())
+		{
+			bOpponentIsActive = LocalEngine->IsPlayerActive(PlayerId);
+		}
+		else
+		{
+			for (const APlayerState* BasePlayerState : GS->PlayerArray)
+			{
+				const AGomokuPlayerState* PlayerState = Cast<AGomokuPlayerState>(BasePlayerState);
+				if (PlayerState && PlayerState->GomokuPlayerId == PlayerId)
+				{
+					bOpponentIsActive = !PlayerState->bAbandoned;
+					break;
+				}
+			}
+		}
+		if (!bOpponentIsActive)
+		{
+			continue;
+		}
+		for (const FIntPoint& Cell : UGomokuPredictionLibrary::FindImmediateWinCells(
+			GS->ReplicatedBoardCells, GS->ReplicatedBoardSizeX, GS->ReplicatedBoardSizeY, PlayerId))
+		{
+			OpponentThreats.Add(Cell);
+		}
+	}
+	for (const FIntPoint& Cell : OpponentThreats)
+	{
+		AddPredictionMarker(OpponentWinThreatInstances, Cell, 0.90f, -6.f);
+	}
+
+	int32 LocalPlayerId = CurrentPlayerId;
+	if (GetNetMode() != NM_Standalone)
+	{
+		const AGomokuPlayerState* LocalState = PC ? PC->GetPlayerState<AGomokuPlayerState>() : nullptr;
+		LocalPlayerId = LocalState ? LocalState->GomokuPlayerId : 0;
+	}
+	if (!GS->bItemsEnabled || !PC || !PC->bItemTargetingActive || LocalPlayerId != CurrentPlayerId)
+	{
+		return;
+	}
+	if (PC->SelectedItemId == 2)
+	{
+		const TArray<FIntPoint> Destinations = UGomokuPredictionLibrary::FindPullDestinations(
+			GS->ReplicatedBoardCells, GS->ReplicatedBoardSizeX, GS->ReplicatedBoardSizeY,
+			LocalPlayerId, GS->ReplicatedGuardianCells);
+		for (const FIntPoint& Cell : Destinations)
+		{
+			AddPredictionMarker(PullDestinationInstances, Cell, 0.62f, -2.f);
+		}
+		FIntPoint Source;
+		if (Destinations.Contains(GS->HoveredCell) && UGomokuPredictionLibrary::FindPullSource(
+			GS->ReplicatedBoardCells, GS->ReplicatedBoardSizeX, GS->ReplicatedBoardSizeY,
+			LocalPlayerId, GS->HoveredCell, GS->ReplicatedGuardianCells, Source))
+		{
+			AddPredictionMarker(PullSourceInstances, Source, 0.96f, -5.f);
+		}
+	}
+	else if (PC->SelectedItemId == 3)
+	{
+		for (const FIntPoint& Cell : UGomokuPredictionLibrary::FindStealTargets(
+			GS->ReplicatedBoardCells, GS->ReplicatedBoardSizeX, GS->ReplicatedBoardSizeY,
+			LocalPlayerId, GS->ReplicatedGuardianCells))
+		{
+			AddPredictionMarker(StealTargetInstances, Cell, 0.98f, -5.f);
+		}
+	}
 }
 
 bool AGomokuBoardActor::ScreenToGrid(APlayerController* PlayerController, const FVector2D& ScreenPosition, FIntPoint& OutCell) const

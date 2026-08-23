@@ -63,6 +63,10 @@ struct FGomokuPlayerStateData
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gomoku|Items")
 	TArray<int32> ItemIds;
 
+	/** Newly offered item while the two inventory slots are full. The owner chooses one stored item to replace. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gomoku|Items")
+	int32 PendingInventoryItemId = 0;
+
 	/** Items gained this turn: not usable until next turn (bGainedThisTurn semantics). */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gomoku|Items")
 	TSet<int32> ItemIdsGainedThisTurn;
@@ -80,6 +84,7 @@ struct FGomokuPlayerStateData
 		Data.bSkipNextTurn = false;
 		Data.bHasAbandoned = false;
 		Data.bUsedItemThisTurn = false;
+		Data.PendingInventoryItemId = 0;
 		return Data;
 	}
 };

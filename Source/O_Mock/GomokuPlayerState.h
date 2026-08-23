@@ -38,9 +38,25 @@ public:
 	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Gomoku")
 	bool bReady = false;
 
+	/** Server-owned participant driven by the authoritative bot turn processor. */
+	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Gomoku|Bot")
+	bool bGomokuBot = false;
+
 	/** Owner-only inventory replication; other clients should not see hidden item contents. */
 	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Gomoku|Items")
 	TArray<int32> InventoryItemIds;
+
+	/** Owner-only list of items gained this turn and therefore not usable yet. */
+	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Gomoku|Items")
+	TArray<int32> LockedInventoryItemIds;
+
+	/** Owner-only one-item-per-turn state used by the interactive inventory. */
+	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Gomoku|Items")
+	bool bUsedItemThisTurn = false;
+
+	/** Owner-only new-item offer shown when the inventory was full at turn start. */
+	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Gomoku|Items")
+	int32 PendingInventoryItemId = 0;
 
 public:
 	UFUNCTION(BlueprintCallable, Category = "Gomoku")
@@ -48,8 +64,12 @@ public:
 
 	UFUNCTION(BlueprintCallable, Category = "Gomoku")
 	void SetPublicMatchState(float InRemainingTime, int32 InEnergy,
-		const TArray<FName>& InEffects, bool bInAbandoned, const TArray<int32>& InInventoryItemIds);
+		const TArray<FName>& InEffects, bool bInAbandoned, const TArray<int32>& InInventoryItemIds,
+		const TArray<int32>& InLockedInventoryItemIds, bool bInUsedItemThisTurn, int32 InPendingInventoryItemId);
 
 	UFUNCTION(BlueprintCallable, Category = "Gomoku")
 	void SetReady(bool bInReady);
+
+	UFUNCTION(BlueprintCallable, Category = "Gomoku|Bot")
+	void SetGomokuBot(bool bInBot);
 };
