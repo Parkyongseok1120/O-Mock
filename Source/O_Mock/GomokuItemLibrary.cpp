@@ -72,6 +72,29 @@ bool UGomokuItemLibrary::IsRegisteredItemId(int32 ItemId)
 	return FindGomokuItemDefinition(ItemId) != nullptr;
 }
 
+bool UGomokuItemLibrary::GetItemData(int32 ItemId, FItemData& OutItemData)
+{
+	const FGomokuStaticItemDef* Definition = FindGomokuItemDefinition(ItemId);
+	if (!Definition)
+	{
+		OutItemData = FItemData();
+		return false;
+	}
+
+	FText DisplayName;
+	switch (Definition->Type)
+	{
+	case EGomokuItemType::SealStone: DisplayName = FText::FromString(TEXT("Seal")); break;
+	case EGomokuItemType::Pull: DisplayName = FText::FromString(TEXT("Pull")); break;
+	case EGomokuItemType::Steal: DisplayName = FText::FromString(TEXT("Steal")); break;
+	case EGomokuItemType::SkipTurn: DisplayName = FText::FromString(TEXT("Skip")); break;
+	case EGomokuItemType::GuardianBarrier: DisplayName = FText::FromString(TEXT("Guard")); break;
+	default: DisplayName = FText::FromString(TEXT("Unknown")); break;
+	}
+	OutItemData = FItemData(Definition->Id, DisplayName, Definition->EnergyCost, Definition->TargetType);
+	return true;
+}
+
 bool UGomokuItemLibrary::CanUseItem(UGomokuRuleEngine* Engine, int32 PlayerId, int32 ItemId)
 {
 	return Engine

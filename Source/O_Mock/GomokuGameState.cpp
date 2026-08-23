@@ -8,6 +8,8 @@
 #include "GameFramework/PlayerController.h"
 #include "Net/UnrealNetwork.h"
 
+DEFINE_LOG_CATEGORY_STATIC(LogGomokuMatchFlow, Log, All);
+
 AGomokuGameState::AGomokuGameState()
 {
 	PrimaryActorTick.bCanEverTick = true;
@@ -41,6 +43,7 @@ void AGomokuGameState::InitializeForLocalHotseat(int32 MaxPlayers)
 	MiniGamePuzzleCells.Reset();
 	MiniGameSubmittedPlayerIndices.Reset();
 	MiniGameCorrectPlayerIndices.Reset();
+	MiniGameInputPlayerIndex = INDEX_NONE;
 	CurrentPlayerIndex = -1;
 
 	PlayerTimes.Reset();
@@ -475,6 +478,9 @@ void AGomokuGameState::RestartMatch()
 	MiniGameResultRemainingTime = 0.0f;
 	MiniGameAnswerCell = FIntPoint(-1, -1);
 	MiniGamePuzzleCells.Reset();
+	MiniGameSubmittedPlayerIndices.Reset();
+	MiniGameCorrectPlayerIndices.Reset();
+	MiniGameInputPlayerIndex = INDEX_NONE;
 
 	PlayerTimes.Reset();
 	for (int32 i = 0; i < LocalPlayerCount; ++i)
@@ -578,8 +584,14 @@ void AGomokuGameState::StartMiniGame()
 	MiniGamePuzzleCells[4 * 7 + 4] = ECellState::Player3;
 	MiniGameSubmittedPlayerIndices.Reset();
 	MiniGameCorrectPlayerIndices.Reset();
+	MiniGameInputPlayerIndex = FindNextMiniGameInputPlayer(INDEX_NONE);
 	MatchPhase = EMatchPhase::MiniGamePlaying;
 	bTimePaused = true;
+	HoveredCell = FIntPoint(-1, -1);
+
+	UE_LOG(LogGomokuMatchFlow, Display,
+		TEXT("Mini-game started after round %d; first hotseat input player=%d"),
+		CurrentRoundIndex - 1, MiniGameInputPlayerIndex + 1);
 
 	if (EventLog)
 	{
@@ -597,9 +609,14 @@ bool AGomokuGameState::SubmitMiniGameAnswer(int32 PlayerIndex, const FIntPoint& 
 	{
 		return false;
 	}
+	if (GetNetMode() == NM_Standalone && PlayerIndex != MiniGameInputPlayerIndex)
+	{
+		return false;
+	}
 
 	MiniGameSubmittedPlayerIndices.Add(PlayerIndex);
-	if (AnswerCell == MiniGameAnswerCell)
+	const bool bCorrect = AnswerCell == MiniGameAnswerCell;
+	if (bCorrect)
 	{
 		const int32 CorrectRank = MiniGameCorrectPlayerIndices.Num();
 		MiniGameCorrectPlayerIndices.Add(PlayerIndex);
@@ -611,6 +628,7 @@ bool AGomokuGameState::SubmitMiniGameAnswer(int32 PlayerIndex, const FIntPoint& 
 	if (MiniGameSubmittedPlayerIndices.Num() >= RuleEngine->GetActivePlayerIndices().Num())
 	{
 		bMiniGameActive = false;
+		MiniGameInputPlayerIndex = INDEX_NONE;
 		MatchPhase = EMatchPhase::MiniGameResult;
 		MiniGameRemainingTime = 0.0f;
 		MiniGameResultRemainingTime = 3.0f;
@@ -620,8 +638,43 @@ bool AGomokuGameState::SubmitMiniGameAnswer(int32 PlayerIndex, const FIntPoint& 
 			OnMatchEvent.Broadcast(EventLog->GetLastEvent());
 		}
 	}
+	else
+	{
+		MiniGameInputPlayerIndex = FindNextMiniGameInputPlayer(PlayerIndex);
+	}
+
+	UE_LOG(LogGomokuMatchFlow, Display,
+		TEXT("Mini-game answer: player=%d cell=(%d,%d) correct=%s submitted=%d/%d next=%d"),
+		PlayerIndex + 1, AnswerCell.X, AnswerCell.Y, bCorrect ? TEXT("true") : TEXT("false"),
+		MiniGameSubmittedPlayerIndices.Num(), RuleEngine->GetActivePlayerIndices().Num(),
+		MiniGameInputPlayerIndex == INDEX_NONE ? 0 : MiniGameInputPlayerIndex + 1);
 
 	return true;
+}
+
+int32 AGomokuGameState::FindNextMiniGameInputPlayer(int32 AfterPlayerIndex) const
+{
+	if (!RuleEngine.IsValid())
+	{
+		return INDEX_NONE;
+	}
+
+	const TArray<int32>& ActiveIndices = RuleEngine->GetActivePlayerIndices();
+	if (ActiveIndices.IsEmpty())
+	{
+		return INDEX_NONE;
+	}
+
+	const int32 StartPosition = FMath::Max(0, ActiveIndices.IndexOfByKey(AfterPlayerIndex) + 1);
+	for (int32 Offset = 0; Offset < ActiveIndices.Num(); ++Offset)
+	{
+		const int32 Candidate = ActiveIndices[(StartPosition + Offset) % ActiveIndices.Num()];
+		if (!MiniGameSubmittedPlayerIndices.Contains(Candidate))
+		{
+			return Candidate;
+		}
+	}
+	return INDEX_NONE;
 }
 
 void AGomokuGameState::ResumeFromMiniGame()
@@ -632,6 +685,7 @@ void AGomokuGameState::ResumeFromMiniGame()
 	}
 
 	bMiniGameActive = false;
+	MiniGameInputPlayerIndex = INDEX_NONE;
 	MiniGameRemainingTime = 0.0f;
 	MiniGameAnswerCell = FIntPoint(-1, -1);
 	MiniGamePuzzleCells.Reset();
@@ -728,7 +782,8 @@ void AGomokuGameState::SyncPlayerStates()
 int32 AGomokuGameState::GetNextMinigameRound() const
 {
 	constexpr int32 Interval = 5;
-	const int32 Next = ((CurrentRoundIndex / Interval) + 1) * Interval;
+	const int32 CompletedRounds = FMath::Max(0, CurrentRoundIndex - 1);
+	const int32 Next = ((CompletedRounds / Interval) + 1) * Interval;
 	return Next;
 }
 
@@ -772,21 +827,26 @@ void AGomokuGameState::Tick(float DeltaTime)
 	{
 		return;
 	}
+	// Editor focus changes and shader work can produce multi-second frame hitches.
+	// Advancing a turn or an eight-second mini-game by that entire hitch makes the
+	// UI appear to skip states, so live simulation consumes a bounded frame step.
+	constexpr float MaxLiveSimulationStep = 0.25f;
+	const float SimulationStep = FMath::Clamp(DeltaTime, 0.0f, MaxLiveSimulationStep);
 	if (MatchPhase == EMatchPhase::MiniGamePlaying)
 	{
-		TickMiniGame(DeltaTime);
+		TickMiniGame(SimulationStep);
 		return;
 	}
 	if (MatchPhase == EMatchPhase::MiniGameResult)
 	{
-		MiniGameResultRemainingTime = FMath::Max(0.0f, MiniGameResultRemainingTime - FMath::Max(0.0f, DeltaTime));
+		MiniGameResultRemainingTime = FMath::Max(0.0f, MiniGameResultRemainingTime - SimulationStep);
 		if (MiniGameResultRemainingTime <= 0.0f)
 		{
 			ResumeFromMiniGame();
 		}
 		return;
 	}
-	TickTimeSystem(DeltaTime);
+	TickTimeSystem(SimulationStep);
 }
 
 void AGomokuGameState::TickMiniGame(float DeltaSeconds)
@@ -800,6 +860,7 @@ void AGomokuGameState::TickMiniGame(float DeltaSeconds)
 	if (MiniGameRemainingTime <= 0.0f)
 	{
 		bMiniGameActive = false;
+		MiniGameInputPlayerIndex = INDEX_NONE;
 		MatchPhase = EMatchPhase::MiniGameResult;
 		MiniGameResultRemainingTime = 3.0f;
 		if (EventLog)
@@ -832,6 +893,7 @@ void AGomokuGameState::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& Out
 	DOREPLIFETIME(AGomokuGameState, MiniGameResultRemainingTime);
 	DOREPLIFETIME(AGomokuGameState, MiniGameSubmittedPlayerIndices);
 	DOREPLIFETIME(AGomokuGameState, MiniGameCorrectPlayerIndices);
+	DOREPLIFETIME(AGomokuGameState, MiniGameInputPlayerIndex);
 	DOREPLIFETIME(AGomokuGameState, ReplicatedBoardSizeX);
 	DOREPLIFETIME(AGomokuGameState, ReplicatedBoardSizeY);
 	DOREPLIFETIME(AGomokuGameState, ReplicatedBoardCells);

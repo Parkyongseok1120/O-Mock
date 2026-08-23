@@ -53,6 +53,20 @@ bool FGomokuStage6_ItemTypesExist::RunTest(const FString& Parameters)
 		return false;
 	}
 
+	FItemData SealData;
+	if (!TestTrue(TEXT("Shared item metadata resolves Seal"), UGomokuItemLibrary::GetItemData(SealStoneId, SealData))
+		|| !TestEqual(TEXT("Seal metadata name"), SealData.DisplayName.ToString(), FString(TEXT("Seal")))
+		|| !TestEqual(TEXT("Seal metadata energy cost"), SealData.EnergyCost, 1)
+		|| !TestEqual(TEXT("Seal metadata target"), SealData.TargetType, EItemTargetType::Cell))
+	{
+		return false;
+	}
+	FItemData UnknownData;
+	if (!TestFalse(TEXT("Unknown item metadata is rejected"), UGomokuItemLibrary::GetItemData(101, UnknownData)))
+	{
+		return false;
+	}
+
 	return true;
 }
 

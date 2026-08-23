@@ -7,6 +7,8 @@
 #include "GomokuGameState.h"
 #include "GomokuHUD.generated.h"
 
+class UGomokuHUDWidget;
+
 UCLASS()
 class O_MOCK_API AGomokuHUD : public AHUD
 {
@@ -17,7 +19,14 @@ public:
 
 protected:
 	virtual void BeginPlay() override;
+	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 	virtual void DrawHUD() override;
+
+	UPROPERTY(EditDefaultsOnly, Category = "Gomoku|UI")
+	TSubclassOf<UGomokuHUDWidget> HUDWidgetClass;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UGomokuHUDWidget> HUDWidget;
 
 private:
 	UFUNCTION()

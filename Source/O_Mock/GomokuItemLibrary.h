@@ -22,6 +22,10 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Gomoku|Items")
 	static bool IsRegisteredItemId(int32 ItemId);
 
+	/** Returns the shared registry metadata used by UI and gameplay validation. */
+	UFUNCTION(BlueprintPure, Category = "Gomoku|Items")
+	static bool GetItemData(int32 ItemId, FItemData& OutItemData);
+
 	/**
 	 * Check if a player can use an item (has it in inventory and is registered).
 	 * Uses RuleEngine's IsItemUsableNow plus registry check.

@@ -5,9 +5,12 @@
 #include "Engine/Font.h"
 #include "Kismet/GameplayStatics.h"
 #include "GomokuGameMode.h"
+#include "GomokuHUDWidget.h"
 #include "GomokuPlayerController.h"
 #include "GomokuPlayerState.h"
 #include "Engine/Engine.h"
+
+DEFINE_LOG_CATEGORY_STATIC(LogGomokuHUD, Log, All);
 
 static FString GetGomokuPhaseLabel(EMatchPhase Phase)
 {
@@ -38,6 +41,7 @@ static FString GetGomokuItemLabel(int32 ItemId)
 
 AGomokuHUD::AGomokuHUD()
 {
+	HUDWidgetClass = UGomokuHUDWidget::StaticClass();
 }
 
 void AGomokuHUD::BeginPlay()
@@ -58,17 +62,56 @@ void AGomokuHUD::BeginPlay()
 	GameOverText = TEXT("");
 	CurrentTurnText = TEXT("Player 1's Turn");
 	PlayerTimeStrings.Reset();
+
+	APlayerController* PlayerController = GetOwningPlayerController();
+	if (PlayerController && PlayerController->IsLocalController())
+	{
+		TSubclassOf<UGomokuHUDWidget> EffectiveWidgetClass = HUDWidgetClass;
+		if (!EffectiveWidgetClass)
+		{
+			EffectiveWidgetClass = UGomokuHUDWidget::StaticClass();
+		}
+		HUDWidget = CreateWidget<UGomokuHUDWidget>(PlayerController, EffectiveWidgetClass);
+		if (HUDWidget)
+		{
+			HUDWidget->AddToViewport(10);
+			UE_LOG(LogGomokuHUD, Display, TEXT("Gomoku HUD widget ready: class=%s"), *HUDWidget->GetClass()->GetName());
+		}
+		else
+		{
+			UE_LOG(LogGomokuHUD, Warning, TEXT("Gomoku HUD widget creation failed; Canvas fallback remains active."));
+		}
+	}
+}
+
+void AGomokuHUD::EndPlay(const EEndPlayReason::Type EndPlayReason)
+{
+	if (GomokuGameState)
+	{
+		GomokuGameState->OnTurnChanged.RemoveDynamic(this, &AGomokuHUD::HandleTurnChanged);
+		GomokuGameState->OnMatchEnded.RemoveDynamic(this, &AGomokuHUD::HandleMatchEnded);
+		GomokuGameState->OnMatchRestarted.RemoveDynamic(this, &AGomokuHUD::HandleMatchRestarted);
+		GomokuGameState->OnTickPlayerTime.RemoveDynamic(this, &AGomokuHUD::OnTickPlayerTime);
+	}
+	if (HUDWidget)
+	{
+		HUDWidget->RemoveFromParent();
+		HUDWidget = nullptr;
+	}
+	Super::EndPlay(EndPlayReason);
 }
 
 void AGomokuHUD::DrawHUD()
 {
 	Super::DrawHUD();
+	if (HUDWidget && HUDWidget->IsInViewport()) return;
 	if (!Canvas) return;
 	UFont* Font = GEngine ? GEngine->GetSmallFont() : nullptr;
 	FString TextToDraw = bShowGameOver ? GameOverText : CurrentTurnText;
 	if (GomokuGameState && GomokuGameState->MatchPhase == EMatchPhase::MiniGamePlaying)
 	{
-		TextToDraw = FString::Printf(TEXT("Mini-game: complete five in a row (%.1fs)"), GomokuGameState->MiniGameRemainingTime);
+		TextToDraw = FString::Printf(TEXT("Mini-game P%d: complete five in a row (%.1fs)"),
+			GomokuGameState->GetMiniGameInputPlayerIndex() + 1, GomokuGameState->MiniGameRemainingTime);
 	}
 	else if (GomokuGameState && GomokuGameState->MatchPhase == EMatchPhase::MiniGameResult)
 	{
@@ -164,7 +207,7 @@ void AGomokuHUD::DrawHUD()
 			Y += 22.f;
 		}
 	}
-	DrawText(TEXT("LMB: place/select | 1-5: select item | Esc: cancel | R: restart"),
+	DrawText(TEXT("LMB: place/select | RMB drag: orbit | Wheel: zoom | F: reset view | R: restart"),
 		FLinearColor(0.72f, 0.72f, 0.72f), 40.f, Y + 10.f, Font, 0.9f, false);
 }
 
@@ -236,7 +279,9 @@ void AGomokuHUD::OnTickPlayerTime(int32 PlayerIndex, const FGomokuPlayerTimeStat
 	if (Count <= 0 || PlayerIndex >= Count)
 		return;
 
-	PlayerTimeStrings.SetNumUninitialized(Count);
+	// FString owns heap state and must be constructed before assignment. Using
+	// SetNumUninitialized here corrupted memory on the first player-time tick.
+	PlayerTimeStrings.SetNum(Count);
 
 	FString Label = FString::Printf(TEXT("P%d: %.1fs"), PlayerIndex + 1, TimeState.PersonalRemaining);
 	PlayerTimeStrings[PlayerIndex] = Label;

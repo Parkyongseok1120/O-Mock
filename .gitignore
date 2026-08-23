@@ -45,6 +45,7 @@
 # Precompiled Assets
 SourceArt/**/*.png
 SourceArt/**/*.tga
+!SourceArt/UI/T_HUD_Panel.png
 
 # Binary Files
 Binaries/*

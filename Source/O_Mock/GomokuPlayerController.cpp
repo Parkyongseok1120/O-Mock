@@ -53,6 +53,8 @@ void AGomokuPlayerController::SetupInputComponent()
 	InputComponent->BindKey(EKeys::Escape, IE_Pressed, this, &AGomokuPlayerController::CancelItemTargeting);
 	InputComponent->BindKey(EKeys::T, IE_Pressed, this, &AGomokuPlayerController::HandleReadyKey);
 	InputComponent->BindKey(EKeys::Enter, IE_Pressed, this, &AGomokuPlayerController::HandleStartMatchKey);
+	InputComponent->BindKey(EKeys::F, IE_Pressed, this, &AGomokuPlayerController::HandleResetCameraKey);
+	InputComponent->BindAxisKey(EKeys::MouseWheelAxis, this, &AGomokuPlayerController::HandleCameraZoom);
 
 	bShowMouseCursor = true;
 }
@@ -67,6 +69,20 @@ void AGomokuPlayerController::PlayerTick(float DeltaTime)
 	}
 	if (!IsLocalController())
 	{
+		return;
+	}
+	if (BoardActor && IsInputKeyDown(EKeys::RightMouseButton))
+	{
+		float MouseDeltaX = 0.f;
+		float MouseDeltaY = 0.f;
+		GetInputMouseDelta(MouseDeltaX, MouseDeltaY);
+		BoardActor->OrbitCamera(
+			MouseDeltaX * CameraOrbitYawSensitivity,
+			MouseDeltaY * CameraOrbitPitchSensitivity);
+		if (GomokuGSState && GetNetMode() == NM_Standalone)
+		{
+			GomokuGSState->ClearHoveredCell();
+		}
 		return;
 	}
 
@@ -97,7 +113,7 @@ void AGomokuPlayerController::HandlePrimaryClick()
 		{
 			if (GetNetMode() == NM_Standalone)
 			{
-				GS->SubmitMiniGameAnswer(GS->CurrentPlayerIndex, Cell);
+				GS->SubmitMiniGameAnswer(GS->GetMiniGameInputPlayerIndex(), Cell);
 			}
 			else
 			{
@@ -303,7 +319,9 @@ void AGomokuPlayerController::HandleMouseMove(FVector2D MousePos)
 
 	FIntPoint Cell;
 	const bool bValid = BoardActor->ScreenToGrid(this, MousePos, Cell);
-	const int32 HoverPlayerIndex = GomokuGSState->CurrentPlayerIndex;
+	const int32 HoverPlayerIndex = GomokuGSState->MatchPhase == EMatchPhase::MiniGamePlaying
+		? GomokuGSState->GetMiniGameInputPlayerIndex()
+		: GomokuGSState->CurrentPlayerIndex;
 	if (bValid == bLastReportedHoverWasValid
 		&& (!bValid || Cell == LastReportedHoveredCell)
 		&& HoverPlayerIndex == LastReportedHoverPlayerIndex)
@@ -389,6 +407,24 @@ void AGomokuPlayerController::HandleSelectItem4() { SelectItem(4); }
 void AGomokuPlayerController::HandleSelectItem5() { SelectItem(5); }
 void AGomokuPlayerController::HandleReadyKey() { SetReadyForLobby(true); }
 void AGomokuPlayerController::HandleStartMatchKey() { RequestStartLobbyMatch(TEXT("")); }
+
+void AGomokuPlayerController::HandleCameraZoom(float Value)
+{
+	ResolveBoardActor();
+	if (BoardActor)
+	{
+		BoardActor->ZoomCamera(Value);
+	}
+}
+
+void AGomokuPlayerController::HandleResetCameraKey()
+{
+	ResolveBoardActor();
+	if (BoardActor)
+	{
+		BoardActor->ResetCameraView();
+	}
+}
 
 void AGomokuPlayerController::ResolveBoardActor()
 {

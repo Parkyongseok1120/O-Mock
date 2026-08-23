@@ -42,6 +42,14 @@ public:
 	UPROPERTY(BlueprintReadOnly, Category = "Gomoku|Items")
 	int32 SelectedItemId = 0;
 
+	/** Mouse-drag yaw degrees applied per raw mouse delta unit. Editable on controller class defaults. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gomoku|Camera", meta = (ClampMin = "0.05", ClampMax = "2.0"))
+	float CameraOrbitYawSensitivity = 0.55f;
+
+	/** Mouse-drag pitch degrees applied per raw mouse delta unit. Editable on controller class defaults. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gomoku|Camera", meta = (ClampMin = "0.05", ClampMax = "2.0"))
+	float CameraOrbitPitchSensitivity = 0.45f;
+
 protected:
 	virtual void BeginPlay() override;
 	virtual void SetupInputComponent() override;
@@ -94,6 +102,8 @@ private:
 	void HandleSelectItem5();
 	void HandleReadyKey();
 	void HandleStartMatchKey();
+	void HandleCameraZoom(float Value);
+	void HandleResetCameraKey();
 	void ResolveBoardActor();
 	int32 ResolveNetworkPlayerIndex() const;
 

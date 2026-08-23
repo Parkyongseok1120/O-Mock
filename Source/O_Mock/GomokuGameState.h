@@ -106,6 +106,10 @@ public:
 	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Gomoku|MiniGame")
 	TArray<int32> MiniGameCorrectPlayerIndices;
 
+	/** Player currently holding the shared input in local hotseat mini-games. */
+	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Gomoku|MiniGame")
+	int32 MiniGameInputPlayerIndex = INDEX_NONE;
+
 	UPROPERTY(ReplicatedUsing=OnRep_ReplicatedBoardCells, BlueprintReadOnly, Category = "Gomoku|Board")
 	TArray<ECellState> ReplicatedBoardCells;
 
@@ -183,6 +187,10 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Gomoku|MiniGame")
 	void ResumeFromMiniGame();
 
+	/** Returns the player who should use the shared mouse for the next hotseat submission. */
+	UFUNCTION(BlueprintPure, Category = "Gomoku|MiniGame")
+	int32 GetMiniGameInputPlayerIndex() const { return MiniGameInputPlayerIndex; }
+
 	UFUNCTION(BlueprintPure, Category = "Gomoku|UI")
 	int32 GetNextMinigameRound() const;
 
@@ -213,6 +221,7 @@ private:
 	void EndCurrentTurn(bool bForceEnd, bool bSkipCompletionTracking = false);
 	void AutoMoveOnTimeout();
 	void TickMiniGame(float DeltaSeconds);
+	int32 FindNextMiniGameInputPlayer(int32 AfterPlayerIndex) const;
 
 	// Replication callbacks
 	UFUNCTION()

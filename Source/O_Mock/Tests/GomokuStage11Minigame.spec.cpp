@@ -56,6 +56,7 @@ bool FGomokuStage11_MiniGameLocksAndResumesMatch::RunTest(const FString& Paramet
 	if (!TestEqual(TEXT("Mini game phase"), GameState->MatchPhase, EMatchPhase::MiniGamePlaying) ||
 		!TestTrue(TEXT("Main turn timer is paused"), GameState->bTimePaused) ||
 		!TestTrue(TEXT("Mini game is active"), GameState->bMiniGameActive) ||
+		!TestEqual(TEXT("Shared hotseat input starts with player one"), GameState->GetMiniGameInputPlayerIndex(), 0) ||
 		!TestEqual(TEXT("Public puzzle contains 49 cells"), GameState->MiniGamePuzzleCells.Num(), 49) ||
 		!TestEqual(TEXT("Answer location is presented as an empty playable cell"),
 			GameState->MiniGamePuzzleCells[Target.Y * 7 + Target.X], ECellState::Empty))
@@ -66,6 +67,7 @@ bool FGomokuStage11_MiniGameLocksAndResumesMatch::RunTest(const FString& Paramet
 
 	if (!TestTrue(TEXT("Correct answer is accepted"), GameState->SubmitMiniGameAnswer(0, Target)) ||
 		!TestEqual(TEXT("First correct answer grants rank-one energy"), Engine->GetPlayerStateData(1).Energy, EnergyBefore + 3) ||
+		!TestEqual(TEXT("Shared hotseat input advances to player two"), GameState->GetMiniGameInputPlayerIndex(), 1) ||
 		!TestFalse(TEXT("Duplicate answer is rejected"), GameState->SubmitMiniGameAnswer(0, Target)))
 	{
 		World->DestroyWorld(false);
@@ -76,6 +78,7 @@ bool FGomokuStage11_MiniGameLocksAndResumesMatch::RunTest(const FString& Paramet
 	const bool bResultValid =
 		TestFalse(TEXT("Mini game ends after all submissions"), GameState->bMiniGameActive) &&
 		TestEqual(TEXT("Mini game enters result phase"), GameState->MatchPhase, EMatchPhase::MiniGameResult) &&
+		TestEqual(TEXT("Shared mini-game input is released during results"), GameState->GetMiniGameInputPlayerIndex(), INDEX_NONE) &&
 		TestTrue(TEXT("Player one is recorded as correct"), GameState->MiniGameCorrectPlayerIndices.Contains(0));
 
 	GameState->ResumeFromMiniGame();

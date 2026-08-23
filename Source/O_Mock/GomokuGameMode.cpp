@@ -224,6 +224,8 @@ void AGomokuGameMode::PostLogin(APlayerController* NewPlayer)
 
 	if (AssignedId == 0)
 	{
+		UE_LOG(LogGomokuGameMode, Warning, TEXT("Network player rejected: lobby is full (%d players max)"),
+			FMath::Clamp(MaxLobbyPlayers, 2, 4));
 		NewPlayer->Destroy();
 		return;
 	}
@@ -235,6 +237,11 @@ void AGomokuGameMode::PostLogin(APlayerController* NewPlayer)
 		FLinearColor(0.9f, 0.2f, 0.2f)
 	};
 	NewPlayerState->SetIdentity(AssignedId, Colors[(AssignedId - 1) % UE_ARRAY_COUNT(Colors)]);
+	if (GetNetMode() != NM_Standalone)
+	{
+		UE_LOG(LogGomokuGameMode, Display, TEXT("Network player joined: id=%d controller=%s players=%d"),
+			AssignedId, *GetNameSafe(NewPlayer), GameState ? GameState->PlayerArray.Num() : 0);
+	}
 }
 
 void AGomokuGameMode::Logout(AController* Exiting)
@@ -265,6 +272,11 @@ void AGomokuGameMode::Logout(AController* Exiting)
 
 	if (AGomokuGameState* GS = GetGomokuGameState())
 	{
+		if (GetNetMode() != NM_Standalone)
+		{
+			UE_LOG(LogGomokuGameMode, Display, TEXT("Network player left: id=%d remaining=%d"),
+				DepartingPlayerId, GS->PlayerArray.Num());
+		}
 		if (GS->PlayerArray.Num() == 0)
 		{
 			bMatchStarted = false;
@@ -330,6 +342,8 @@ bool AGomokuGameMode::TryStartMatch(APlayerController* RequestingPlayer, const F
 	DefaultHotseatPlayers = FMath::Clamp(GameState->PlayerArray.Num(), 2, 4);
 	InitializeMatchFromSettings();
 	bMatchStarted = true;
+	UE_LOG(LogGomokuGameMode, Display, TEXT("Network lobby match started: host=%s players=%d map=%s"),
+		*GetNameSafe(RequestingPlayer), DefaultHotseatPlayers, *MapName);
 
 	EnsureBoardActor();
 	ConfigureBoardActor();
