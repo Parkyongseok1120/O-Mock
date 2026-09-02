@@ -8,6 +8,23 @@ O-Mock은 제가 개발한 **UE5 Local LLM Agent MCP**를 실제 Unreal Engine �
 로컬 LLM이 프로젝트의 코드를 탐색하고 수정하며 빌드·검증을 반복하는 Agent Workflow를
 실제 게임 개발 과정에 적용할 수 있는지 확인하는 것을 목표로 제작했습니다.
 
+# Related Project
+
+UE5 Local LLM Agent MCP
+
+https://github.com/Parkyongseok1120/UE5_Local_LLM_MCP_lmstudio
+
+# Demo
+
+## Local LLM Agent MCP Demo
+
+https://youtu.be/yUkfDmUymNM?si=F8BjY5ySRoFkveIt
+
+## O-Mock Multiplayer Prototype Demo
+
+https://youtu.be/_v-zUaEP8pA?si=zohxKXJgYh2ht9Vc
+
+
 ## Project Overview
 
 기본 오목 규칙에 아이템, 턴 조작, 미니게임을 결합한
