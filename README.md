@@ -1,9 +1,12 @@
 # O-Mock
 
-> **Local LLM Agent MCP Validation Project / Unreal Engine 5 Multiplayer Prototype**
 <img width="1049" height="562" alt="Image" src="https://github.com/user-attachments/assets/f98f3292-535c-40dc-8cf4-d8b37a2d8edc" />
 
-O-Mock은 제가 개발한 **UE5 Local LLM Agent MCP**를 실제 Unreal Engine 게임 개발 환경에서 검증하기 위해 제작한 실험용 멀티플레이 게임 프로토타입입니다.
+> **Local LLM Agent MCP Validation Project / Unreal Engine 5 Multiplayer Prototype**
+
+
+O-Mock은 제가 개발한 **UE5 Local LLM Agent MCP**를 실제 Unreal Engine 게임 개발 환경에서 
+검증하기 위해 제작한 실험용 멀티플레이 게임 프로토타입입니다.
 
 단순한 코드 생성 테스트가 아니라,
 로컬 LLM이 프로젝트의 코드를 탐색하고 수정하며 빌드·검증을 반복하는 Agent Workflow를
